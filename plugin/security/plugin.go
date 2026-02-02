@@ -9,9 +9,9 @@ import (
     "github.com/coredns/coredns/request"
     "github.com/miekg/dns"
     
-    "github.com/proxy/dnscloud-go/checker"
-    "github.com/proxy/dnscloud-go/config"
-    "github.com/proxy/dnscloud-go/logger"
+    "github.com/dknetwell/dnscloud-go/checker"
+    "github.com/dknetwell/dnscloud-go/config"
+    "github.com/dknetwell/dnscloud-go/logger"
 )
 
 type Security struct {
