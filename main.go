@@ -8,10 +8,10 @@ import (
     "github.com/coredns/coredns/core/dnsserver"
     "github.com/coredns/coredns/coremain"
     
-    _ "github.com/proxy/dnscloud-go/plugin/security"
+    _ "github.com/dknetwell/dnscloud-go/plugin/security"
     
-    "github.com/proxy/dnscloud-go/config"
-    "github.com/proxy/dnscloud-go/logger"
+    "github.com/dknetwell/dnscloud-go/config"
+    "github.com/dknetwell/dnscloud-go/logger"
 )
 
 func init() {
