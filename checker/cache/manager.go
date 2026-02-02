@@ -6,9 +6,9 @@ import (
     "github.com/dgraph-io/ristretto"
     "github.com/go-redis/redis/v8"
     
-    "github.com/proxy/dnscloud-go/checker/models"
-    "github.com/proxy/dnscloud-go/config"
-    "github.com/proxy/dnscloud-go/logger"
+    "github.com/dknetwell/dnscloud-go/checker/models"
+    "github.com/dknetwell/dnscloud-go/config"
+    "github.com/dknetwell/dnscloud-go/logger"
 )
 
 type CacheManager struct {
