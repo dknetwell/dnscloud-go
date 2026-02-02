@@ -1,4 +1,4 @@
-module github.com/proxy/dnscloud-go
+module github.com/dknetwell/dnscloud-go
 
 go 1.21
 
