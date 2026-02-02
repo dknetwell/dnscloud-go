@@ -1,0 +1,37 @@
+# Многостадийная сборка
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /build
+
+# Устанавливаем зависимости
+RUN apk add --no-cache git make
+
+# Копируем go.mod и go.sum
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Копируем исходный код
+COPY . .
+
+# Собираем плагин
+RUN CGO_ENABLED=0 GOOS=linux go build -o dns-security-plugin.so -buildmode=plugin ./plugin/security
+
+# Копируем CoreDNS
+FROM coredns/coredns:1.11.1 AS coredns
+
+# Копируем наш плагин
+COPY --from=builder /build/dns-security-plugin.so /plugins/
+
+# Копируем конфиги
+COPY Corefile /etc/coredns/Corefile
+COPY config/config.yaml /app/config/config.yaml
+
+# Создаем пользователя
+RUN addgroup -g 1000 coredns && \
+    adduser -D -u 1000 -G coredns coredns
+
+USER coredns
+
+EXPOSE 53 53/udp 8080 9091
+
+ENTRYPOINT ["/coredns", "-conf", "/etc/coredns/Corefile"]

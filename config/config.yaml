@@ -1,0 +1,107 @@
+# Основные настройки
+server:
+  listen: ":53"
+  udp_buffer_size: 4096
+  prometheus_port: 9091
+  health_port: 8080
+
+# Таймауты (в миллисекундах)
+timeouts:
+  total: 95          # Общий таймаут на проверку
+  cloud_api: 50      # Cloud API таймаут
+  cloud_dns: 50      # Cloud DNS таймаут
+  fallback_dns: 30   # Fallback DNS таймаут
+  enrichment: 100    # Таймаут на обогащение (в фоне)
+
+# Cloud API настройки
+cloud_api:
+  url: "${CLOUD_API_URL}"
+  key: "${CLOUD_API_KEY}"
+  rate_limit: ${RATE_LIMIT_RPS:-5}  # Запросов в секунду
+  burst: 2                          # Размер burst
+  timeout: ${timeouts.cloud_api}ms
+
+# Cloud DNS настройки
+cloud_dns:
+  server: "${CLOUD_DNS_SERVER}"
+  timeout: ${timeouts.cloud_dns}ms
+
+# Fallback DNS серверы
+fallback_dns:
+  servers:
+    - "8.8.8.8:53"
+    - "1.1.1.1:53"
+  timeout: ${timeouts.fallback_dns}ms
+
+# Sinkhole IP адреса по категориям
+sinkholes:
+  categories:
+    1: "0.0.0.0"    # malware
+    2: "0.0.0.1"    # C&C
+    3: "0.0.0.2"    # phishing
+    8: "0.0.0.3"    # proxy
+  default: "0.0.0.0"
+  ipv6: "::1"       # IPv6 sinkhole
+
+# TTL настройки (в секундах)
+ttl:
+  by_category:
+    0: 300      # benign (5 минут)
+    1: 3600     # malware (1 час)
+    2: 3600     # C&C (1 час)
+    3: 3600     # phishing (1 час)
+    4: 60       # dynamicDNS (1 минута)
+    5: 60       # newly registered (1 минута)
+    6: 300      # grayware (5 минут)
+    7: 300      # parked (5 минут)
+    8: 3600     # proxy (1 час)
+    9: 86400    # allowlist (24 часа)
+  
+  fallback: 300     # Fallback TTL
+  min: 30           # Минимальный TTL
+  max: 86400        # Максимальный TTL
+  
+  # Для обогащенных ответов
+  enriched_multiplier: 1.2  # TTL на 20% больше
+
+# Кеширование
+cache:
+  memory:
+    max_size_mb: 500        # Максимальный размер memory кеша
+    num_counters: 1000000   # Количество счетчиков (10x от ожидаемых ключей)
+    buffer_items: 256       # Для высокой конкурентности
+    cost_estimation: true   # Оценивать размер значений
+    
+  valkey:
+    address: "valkey:6379"
+    password: "${VALKEY_PASSWORD}"
+    pool_size: 100
+    read_timeout: 5ms
+    write_timeout: 100ms    # Async writes
+    
+  # Стратегия кеширования
+  strategy: "hybrid"        # hybrid, memory_only, valkey_only
+  preload_on_start: false   # Предзагрузка при старте
+
+# Логирование
+logging:
+  level: "${LOG_LEVEL:-info}"
+  format: "json"            # json или text
+  output: "stdout"          # stdout, file, или both
+  file_path: "/var/log/dns-security.log"
+  max_size_mb: 100
+  max_backups: 10
+  max_age_days: 30
+
+# Мониторинг
+monitoring:
+  prometheus_enabled: true
+  statsd_enabled: false
+  health_check_interval: 30s
+
+# Блокировки по умолчанию (при старте)
+blocklists:
+  preload_files:
+    - "data/blocklists/malware.txt"
+    - "data/blocklists/phishing.txt"
+  update_interval: 1h       # Обновление блок-листов
