@@ -6,8 +6,8 @@ import (
     "time"
     
     "github.com/dgraph-io/ristretto"
-    "github.com/proxy/dnscloud-go/config"
-    "github.com/proxy/dnscloud-go/logger"
+    "github.com/dknetwell/dnscloud-go/config"
+    "github.com/dknetwell/dnscloud-go/logger"
 )
 
 type FastDNSClient struct {
