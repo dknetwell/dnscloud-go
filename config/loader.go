@@ -15,7 +15,11 @@ func Load() error {
     godotenv.Load()
     
     // Читаем конфиг
-    data, err := os.ReadFile("config/config.yaml")
+    configPath := os.Getenv("CONFIG_PATH")
+    if configPath == "" {
+        configPath = "config/config.yaml"
+    }
+    data, err := os.ReadFile(configPath)
     if err != nil {
         return err
     }
