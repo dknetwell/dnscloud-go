@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # Собираем плагин
-RUN CGO_ENABLED=0 GOOS=linux go build -o dns-security-plugin.so -buildmode=plugin ./plugin/security
+RUN CGO_ENABLED=0 GOOS=linux go build -o dns-security-plugin.so -buildmode=plugin plugin/security/plugin.go
 
 # Копируем CoreDNS
 FROM coredns/coredns:1.11.1 AS coredns
