@@ -7,8 +7,8 @@ import (
     "strings"
     "time"
     
-    "github.com/proxy/dnscloud-go/config"
-    "github.com/proxy/dnscloud-go/logger"
+    "github.com/dknetwell/dnscloud-go/config"
+    "github.com/dknetwell/dnscloud-go/logger"
 )
 
 type CloudAPIClient struct {
