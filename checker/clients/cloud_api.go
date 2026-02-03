@@ -2,13 +2,16 @@ package clients
 
 import (
     "context"
+    "crypto/tls"
+    "encoding/json"
     "encoding/xml"
     "fmt"
-    "strings"
+    "io"
+    "net/http"
     "time"
-    
-    "github.com/dknetwell/dnscloud-go/config"
-    "github.com/dknetwell/dnscloud-go/logger"
+
+    "config"
+    "logger"
 )
 
 type CloudAPIClient struct {
@@ -44,28 +47,28 @@ func NewCloudAPIClient(cfg *config.CloudAPIConfig) *CloudAPIClient {
 
 func (c *CloudAPIClient) Check(ctx context.Context, domain string) (*APIResponse, error) {
     start := time.Now()
-    
+
     // Формируем XML запрос
     xmlCmd := fmt.Sprintf(
         `<test><dns-proxy><dns-signature><fqdn>%s</fqdn></dns-signature></dns-proxy></test>`,
         domain)
-    
+
     // Создаем запрос
     req, err := http.NewRequestWithContext(ctx, "GET", c.config.URL, nil)
     if err != nil {
         return nil, err
     }
-    
+
     // Добавляем параметры
     q := req.URL.Query()
     q.Add("type", "op")
     q.Add("cmd", xmlCmd)
     req.URL.RawQuery = q.Encode()
-    
+
     // Добавляем заголовки
     req.Header.Set("X-PAN-KEY", c.config.Key)
     req.Header.Set("Accept", "application/json")
-    
+
     // Выполняем запрос
     resp, err := c.client.Do(req)
     if err != nil {
@@ -76,40 +79,40 @@ func (c *CloudAPIClient) Check(ctx context.Context, domain string) (*APIResponse
         return nil, err
     }
     defer resp.Body.Close()
-    
+
     // Читаем ответ
     body, err := io.ReadAll(resp.Body)
     if err != nil {
         return nil, err
     }
-    
+
     logger.Debug("Cloud API response",
         "domain", domain,
         "status", resp.StatusCode,
         "duration_ms", time.Since(start).Milliseconds())
-    
+
     // Парсим XML
     var apiResp APIResponse
     if err := xml.Unmarshal(body, &apiResp); err != nil {
         return nil, err
     }
-    
+
     if apiResp.Status != "success" {
         return nil, fmt.Errorf("API returned status: %s", apiResp.Status)
     }
-    
+
     // Парсим JSON внутри XML
     var parsed ParsedResult
     if err := json.Unmarshal([]byte(apiResp.Result), &parsed); err != nil {
         return nil, err
     }
-    
+
     if len(parsed.DNSSignature) == 0 {
         return nil, fmt.Errorf("no signature in response")
     }
-    
+
     sig := parsed.DNSSignature[0]
-    
+
     return &APIResponse{
         Domain:   sig.FQDN,
         Category: sig.Category,
