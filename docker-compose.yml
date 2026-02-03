@@ -1,44 +1,26 @@
 version: '3.8'
 
-networks:
-  dns-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 10.10.10.0/24
-
-volumes:
-  valkey-data:
-  logs:
-
 services:
-  # Valkey для распределенного кеша
   valkey:
-    image: valkey/valkey:latest
+    image: valkey/valkey:7.2.5-alpine
     container_name: dns-valkey
     restart: unless-stopped
     ports:
       - "6379:6379"
     environment:
-      - VALKEY_PASSWORD=${VALKEY_PASSWORD:-SecurePass123}
-    volumes:
-      - valkey-data:/data
-    networks:
-      dns-net:
-        ipv4_address: 10.10.10.11
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD:-SecurePass123!}
     command: >
-      --requirepass ${VALKEY_PASSWORD:-SecurePass123}
+      --requirepass ${VALKEY_PASSWORD:-SecurePass123!}
       --appendonly yes
-      --maxmemory 1gb
-      --maxmemory-policy allkeys-lru
     healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:-SecurePass123}", "ping"]
+      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:-SecurePass123!}", "ping"]
       interval: 10s
       timeout: 3s
       retries: 3
+    volumes:
+      - valkey-data:/data
 
-  # CoreDNS с нашим плагином
-  coredns:
+  dns-proxy:
     build:
       context: .
       dockerfile: Dockerfile.coredns
@@ -47,35 +29,28 @@ services:
     ports:
       - "53:53/udp"
       - "53:53/tcp"
-      - "8080:8080"  # Health
-      - "9091:9091"  # Prometheus
-    volumes:
-      - ./config/config.yaml:/app/config/config.yaml
-      - ./logs:/var/log
-      - /etc/localtime:/etc/localtime:ro
+      - "8080:8080"
+      - "9091:9091"
     environment:
       - CLOUD_API_KEY=${CLOUD_API_KEY}
       - CLOUD_API_URL=${CLOUD_API_URL:-https://172.16.10.33/api/}
       - CLOUD_DNS_SERVER=${CLOUD_DNS_SERVER:-172.16.10.34:53}
-      - VALKEY_PASSWORD=${VALKEY_PASSWORD:-SecurePass123}
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD:-SecurePass123!}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - RATE_LIMIT_RPS=${RATE_LIMIT_RPS:-5}
-    networks:
-      dns-net:
-        ipv4_address: 10.10.10.31
+    volumes:
+      - ./config/config.yaml:/app/config/config.yaml:ro
+      - ./data:/app/data:ro
+      - ./logs:/var/log
     depends_on:
       valkey:
         condition: service_healthy
     cap_add:
-      - NET_ADMIN
-      - NET_RAW
+      - NET_BIND_SERVICE
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 3s
+      test: ["CMD-SHELL", "nc -z localhost 8080 || exit 1"]
+      interval: 30s
+      timeout: 5s
       retries: 3
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+
+volumes:
+  valkey-data:
