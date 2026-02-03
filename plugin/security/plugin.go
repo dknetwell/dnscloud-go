@@ -81,4 +81,67 @@ func (s *Security) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
         s.metrics.IncBlocked(result.Category)
     } else {
         s.metrics.IncAllowed()
-   
+    }
+
+    return dns.RcodeSuccess, nil
+}
+
+func (s *Security) createDNSResponse(query *dns.Msg, result *checker.DomainResult, qtype uint16) *dns.Msg {
+    m := new(dns.Msg)
+    m.SetReply(query)
+    m.Authoritative = true
+    m.RecursionAvailable = true
+
+    ttl := result.TTL
+
+    switch qtype {
+    case dns.TypeA:
+        // Для A запросов
+        if result.IP != "" {
+            m.Answer = []dns.RR{
+                &dns.A{
+                    Hdr: dns.RR_Header{
+                        Name:   query.Question[0].Name,
+                        Rrtype: dns.TypeA,
+                        Class:  dns.ClassINET,
+                        Ttl:    ttl,
+                    },
+                    A: result.IP,
+                },
+            }
+            m.Rcode = dns.RcodeSuccess
+        } else {
+            // Нет IP - возвращаем NXDOMAIN
+            m.Rcode = dns.RcodeNameError
+        }
+
+    case dns.TypeAAAA:
+        // Для AAAA запросов
+        if result.Action == "block" {
+            // Возвращаем IPv6 sinkhole
+            m.Answer = []dns.RR{
+                &dns.AAAA{
+                    Hdr: dns.RR_Header{
+                        Name:   query.Question[0].Name,
+                        Rrtype: dns.TypeAAAA,
+                        Class:  dns.ClassINET,
+                        Ttl:    ttl,
+                    },
+                    AAAA: config.Get().Sinkholes.IPv6,
+                },
+            }
+            m.Rcode = dns.RcodeSuccess
+        } else {
+            // Для разрешенных - пустой ответ
+            m.Rcode = dns.RcodeSuccess
+        }
+
+    default:
+        // Для других типов запросов
+        m.Rcode = dns.RcodeNameError
+    }
+
+    return m
+}
+
+func (s *Security) Name() string { return "security" }
