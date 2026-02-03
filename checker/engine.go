@@ -4,9 +4,9 @@ import (
     "context"
     "sync"
     "time"
-    
-    "github.com/dknetwell/dnscloud-go/config"
-    "github.com/dknetwell/dnscloud-go/logger"
+
+    "config"
+    "logger"
 )
 
 type Engine struct {
@@ -20,7 +20,7 @@ type Engine struct {
 
 func NewEngine() *Engine {
     cfg := config.Get()
-    
+
     return &Engine{
         cache:       NewCacheManager(),
         cloudAPI:    NewCloudAPIClient(cfg.CloudAPI),
@@ -36,69 +36,69 @@ func (e *Engine) Check(ctx context.Context, domain string) (*DomainResult, error
     if cached := e.cache.Get(domain); cached != nil {
         return cached, nil
     }
-    
+
     // 2. Параллельные проверки с таймаутом 95ms
     ctx, cancel := context.WithTimeout(ctx, 95*time.Millisecond)
     defer cancel()
-    
+
     // 3. Запускаем проверки
     apiChan := make(chan *APIResponse, 1)
     dnsChan := make(chan *DNSResponse, 1)
-    
+
     go e.checkCloudAPI(ctx, domain, apiChan)
     go e.checkCloudDNS(ctx, domain, dnsChan)
-    
+
     // 4. Ждем первый успешный результат
     var result *DomainResult
-    
+
     select {
     case apiResp := <-apiChan:
         // Cloud API ответил первым
         result = e.createResultFromAPI(apiResp)
-        
+
         // Сразу отвечаем клиенту (с IP из fast DNS если есть)
         if result.IP == "" && result.Action == "allow" {
             // Пробуем быстро получить IP
             ip, _ := e.fastDNS.LookupA(context.Background(), domain)
             result.IP = ip
         }
-        
+
         // В фоне ждем Cloud DNS для обогащения
         go e.waitForDNSAndEnrich(domain, dnsChan, result)
-        
+
     case dnsResp := <-dnsChan:
         // Cloud DNS ответил первым
         result = e.createResultFromDNS(dnsResp)
-        
+
         // Сразу отвечаем клиенту
         // В фоне ждем Cloud API для обогащения категорией
         go e.waitForAPIAndEnrich(domain, apiChan, result)
-        
+
     case <-ctx.Done():
         // ТАЙМАУТ - только тогда используем fallback
         result = e.fallbackCheck(context.Background(), domain)
     }
-    
+
     // 5. Кешируем результат (даже если не полный)
     e.cache.Set(domain, result)
-    
+
     return result, nil
 }
 
-func (e *Engine) processResults(domain string, 
+func (e *Engine) processResults(domain string,
     apiResult *APIResponse, apiErr error,
     dnsResult *DNSResponse, dnsErr error) *DomainResult {
-    
+
     // Логируем результаты проверок
     logger.Debug("Processing check results",
         "domain", domain,
         "api_success", apiErr == nil,
         "dns_success", dnsErr == nil)
-    
+
     // Сценарий 1: Cloud API успел
     if apiResult != nil && apiErr == nil {
         result := e.createResultFromAPI(apiResult)
-        
+
         // Обогащаем IP если Cloud DNS тоже успел
         if dnsResult != nil && dnsErr == nil {
             result.IP = dnsResult.IP
@@ -114,14 +114,14 @@ func (e *Engine) processResults(domain string,
                 result.Source = "cloud_api"
             }
         }
-        
+
         return result
     }
-    
+
     // Сценарий 2: Cloud DNS успел
     if dnsResult != nil && dnsErr == nil {
         result := e.createResultFromDNS(dnsResult)
-        
+
         // Если API потом ответил, обогащаем категорией
         if apiResult != nil && apiErr == nil {
             result.Category = apiResult.Category
@@ -129,16 +129,16 @@ func (e *Engine) processResults(domain string,
             result.Source = "enriched_dns_api"
             result.TTL = e.adjustTTL(result.TTL, true)
         }
-        
+
         return result
     }
-    
+
     // Сценарий 3: Обе проверки не удались
     logger.Warn("Both checks failed, using fallback",
         "domain", domain,
         "api_error", apiErr,
         "dns_error", dnsErr)
-    
+
     return e.fallbackCheck(context.Background(), domain)
 }
 
@@ -148,7 +148,7 @@ func (e *Engine) createResultFromAPI(apiResult *APIResponse) *DomainResult {
         Category: apiResult.Category,
         TTL:      config.GetTTLByCategory(apiResult.Category),
     }
-    
+
     // Определяем action по категории
     if apiResult.Category == 0 || apiResult.Category == 7 || apiResult.Category == 9 {
         result.Action = "allow"
@@ -158,7 +158,7 @@ func (e *Engine) createResultFromAPI(apiResult *APIResponse) *DomainResult {
         result.Action = "block"
         result.IP = config.GetSinkholeIP(apiResult.Category)
     }
-    
+
     return result
 }
 
@@ -168,7 +168,7 @@ func (e *Engine) createResultFromDNS(dnsResult *DNSResponse) *DomainResult {
         IP:     dnsResult.IP,
         TTL:    uint32(dnsResult.TTL),
     }
-    
+
     // Cloud DNS вернул sinkhole
     if dnsResult.IsSinkhole {
         result.Action = "block"
@@ -180,13 +180,13 @@ func (e *Engine) createResultFromDNS(dnsResult *DNSResponse) *DomainResult {
         result.Category = 0 // предполагаем benign
         result.Source = "cloud_dns"
     }
-    
+
     return result
 }
 
 func (e *Engine) fallbackCheck(ctx context.Context, domain string) *DomainResult {
     ip, err := e.fastDNS.LookupA(ctx, domain)
-    
+
     result := &DomainResult{
         Domain: domain,
         Action: "allow",
@@ -194,17 +194,17 @@ func (e *Engine) fallbackCheck(ctx context.Context, domain string) *DomainResult
         Source: "fallback",
         TTL: config.GetTTLByCategory(0),
     }
-    
+
     if err == nil {
         result.IP = ip
     }
-    
+
     return result
 }
 
 func (e *Engine) adjustTTL(ttl uint32, enriched bool) uint32 {
     cfg := config.Get()
-    
+
     // Применяем ограничения
     if ttl < uint32(cfg.TTL.Min) {
         ttl = uint32(cfg.TTL.Min)
@@ -212,7 +212,7 @@ func (e *Engine) adjustTTL(ttl uint32, enriched bool) uint32 {
     if ttl > uint32(cfg.TTL.Max) {
         ttl = uint32(cfg.TTL.Max)
     }
-    
+
     // Увеличиваем TTL для обогащенных ответов
     if enriched && cfg.TTL.EnrichedMultiplier > 1.0 {
         ttl = uint32(float64(ttl) * cfg.TTL.EnrichedMultiplier)
@@ -220,6 +220,6 @@ func (e *Engine) adjustTTL(ttl uint32, enriched bool) uint32 {
             ttl = uint32(cfg.TTL.Max)
         }
     }
-    
+
     return ttl
 }
