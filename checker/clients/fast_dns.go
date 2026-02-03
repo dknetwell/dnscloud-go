@@ -2,12 +2,13 @@ package clients
 
 import (
     "context"
+    "fmt"
     "net"
     "time"
-    
+
     "github.com/dgraph-io/ristretto"
-    "github.com/dknetwell/dnscloud-go/config"
-    "github.com/dknetwell/dnscloud-go/logger"
+    "config"
+    "logger"
 )
 
 type FastDNSClient struct {
@@ -23,7 +24,7 @@ func NewFastDNSClient(cfg *config.FallbackDNSConfig) *FastDNSClient {
         MaxCost:     50 << 20, // 50MB
         BufferItems: 64,
     })
-    
+
     // Создаем резолвер с указанными серверами
     resolver := &net.Resolver{
         PreferGo: true,
@@ -35,7 +36,7 @@ func NewFastDNSClient(cfg *config.FallbackDNSConfig) *FastDNSClient {
             return d.DialContext(ctx, "udp", cfg.Servers[0])
         },
     }
-    
+
     return &FastDNSClient{
         resolver: resolver,
         cache:    cache,
@@ -45,7 +46,7 @@ func NewFastDNSClient(cfg *config.FallbackDNSConfig) *FastDNSClient {
 
 func (f *FastDNSClient) LookupA(ctx context.Context, domain string) (string, error) {
     start := time.Now()
-    
+
     // Проверяем кеш
     if ip, found := f.cache.Get(domain); found {
         logger.Debug("Fast DNS cache hit",
@@ -53,11 +54,11 @@ func (f *FastDNSClient) LookupA(ctx context.Context, domain string) (string, err
             "ip", ip)
         return ip.(string), nil
     }
-    
+
     // Устанавливаем таймаут
     ctx, cancel := context.WithTimeout(ctx, f.timeout)
     defer cancel()
-    
+
     // Выполняем DNS запрос
     ips, err := f.resolver.LookupIP(ctx, "ip4", domain)
     if err != nil {
@@ -67,20 +68,20 @@ func (f *FastDNSClient) LookupA(ctx context.Context, domain string) (string, err
             "duration_ms", time.Since(start).Milliseconds())
         return "", err
     }
-    
+
     if len(ips) == 0 {
         return "", fmt.Errorf("no IP found for domain")
     }
-    
+
     ip := ips[0].String()
-    
+
     // Кешируем результат с коротким TTL
     f.cache.SetWithTTL(domain, ip, 1, 60*time.Second)
-    
+
     logger.Debug("Fast DNS lookup completed",
         "domain", domain,
         "ip", ip,
         "duration_ms", time.Since(start).Milliseconds())
-    
+
     return ip, nil
 }
