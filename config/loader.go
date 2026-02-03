@@ -13,7 +13,7 @@ import (
 func Load() error {
     // Загружаем .env файл
     godotenv.Load()
-    
+
     // Читаем конфиг
     configPath := os.Getenv("CONFIG_PATH")
     if configPath == "" {
@@ -23,26 +23,26 @@ func Load() error {
     if err != nil {
         return err
     }
-    
+
     // Подставляем переменные окружения
     expanded := os.ExpandEnv(string(data))
-    
+
     // Парсим YAML
     cfg = &Config{}
     if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
         return err
     }
-    
+
     // Конвертируем миллисекунды в Duration
     cfg.CloudAPI.Timeout = cfg.Timeouts.CloudAPI
     cfg.CloudDNS.Timeout = cfg.Timeouts.CloudDNS
-    
+
     // Устанавливаем таймауты как Duration
     readTimeout, _ := time.ParseDuration(cfg.Cache.Valkey.ReadTimeout.String())
     writeTimeout, _ := time.ParseDuration(cfg.Cache.Valkey.WriteTimeout.String())
     cfg.Cache.Valkey.ReadTimeout = readTimeout
     cfg.Cache.Valkey.WriteTimeout = writeTimeout
-    
+
     return nil
 }
 
