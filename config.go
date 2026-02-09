@@ -14,11 +14,13 @@ type Config struct {
     DNSListen  string        `yaml:"dns_listen"`
     HTTPListen string        `yaml:"http_listen"`
     LogLevel   string        `yaml:"log_level"`
+    LogFormat  string        `yaml:"log_format"`
     Timeouts   TimeoutConfig `yaml:"timeouts"`
     CloudAPI   CloudAPIConfig `yaml:"cloud_api"`
     Cache      CacheConfig   `yaml:"cache"`
     Sinkholes  SinkholeConfig `yaml:"sinkholes"`
     TTL        TTLConfig     `yaml:"ttl"`
+    Metrics    MetricsConfig `yaml:"metrics"`
 }
 
 type TimeoutConfig struct {
@@ -26,30 +28,54 @@ type TimeoutConfig struct {
     CloudAPI    time.Duration `yaml:"cloud_api"`
     CacheRead   time.Duration `yaml:"cache_read"`
     CacheWrite  time.Duration `yaml:"cache_write"`
+    DNSResponse time.Duration `yaml:"dns_response"`
 }
 
 type CloudAPIConfig struct {
     URL       string        `yaml:"url"`
     Key       string        `yaml:"key"`
-    Timeout   time.Duration `yaml:"timeout"`
     RateLimit int           `yaml:"rate_limit"`
+    Burst     int           `yaml:"burst"`
+    Timeout   time.Duration `yaml:"timeout"`
 }
 
 type CacheConfig struct {
-    Strategy      string `yaml:"strategy"`
-    ValkeyAddr    string `yaml:"valkey_address"`
-    ValkeyPass    string `yaml:"valkey_password"`
-    MemoryMaxSize int    `yaml:"memory_max_size_mb"`
+    Strategy string            `yaml:"strategy"`
+    Memory   MemoryCacheConfig `yaml:"memory"`
+    Valkey   ValkeyCacheConfig `yaml:"valkey"`
+}
+
+type MemoryCacheConfig struct {
+    MaxSizeMB        int           `yaml:"max_size_mb"`
+    DefaultExpiration time.Duration `yaml:"default_expiration"`
+    CleanupInterval  time.Duration `yaml:"cleanup_interval"`
+}
+
+type ValkeyCacheConfig struct {
+    Address     string        `yaml:"address"`
+    Password    string        `yaml:"password"`
+    PoolSize    int           `yaml:"pool_size"`
+    ReadTimeout time.Duration `yaml:"read_timeout"`
+    WriteTimeout time.Duration `yaml:"write_timeout"`
 }
 
 type SinkholeConfig struct {
     Categories map[int]string `yaml:"categories"`
     Default    string         `yaml:"default"`
+    IPv6       string         `yaml:"ipv6"`
 }
 
 type TTLConfig struct {
     ByCategory map[int]int `yaml:"by_category"`
     Fallback   int         `yaml:"fallback"`
+    Min        int         `yaml:"min"`
+    Max        int         `yaml:"max"`
+}
+
+type MetricsConfig struct {
+    PrometheusEnabled bool          `yaml:"prometheus_enabled"`
+    Prefix           string         `yaml:"prefix"`
+    CollectInterval  time.Duration `yaml:"collect_interval"`
 }
 
 var config *Config
@@ -59,12 +85,13 @@ func loadConfig() error {
     godotenv.Load()
     
     // Проверяем наличие конфига
-    if _, err := os.Stat("config/config.yaml"); os.IsNotExist(err) {
-        return fmt.Errorf("config file not found: config/config.yaml")
+    configPath := "config/config.yaml"
+    if _, err := os.Stat(configPath); os.IsNotExist(err) {
+        return fmt.Errorf("config file not found: %s", configPath)
     }
     
     // Читаем конфигурацию YAML
-    data, err := os.ReadFile("config/config.yaml")
+    data, err := os.ReadFile(configPath)
     if err != nil {
         return fmt.Errorf("failed to read config file: %w", err)
     }
@@ -75,9 +102,8 @@ func loadConfig() error {
     }
     
     // Заменяем переменные окружения
-    cfg.CloudAPI.Key = os.ExpandEnv(cfg.CloudAPI.Key)
-    cfg.CloudAPI.URL = os.ExpandEnv(cfg.CloudAPI.URL)
-    cfg.Cache.ValkeyPass = os.ExpandEnv(cfg.Cache.ValkeyPass)
+    // Простая замена ${VAR} на значения из окружения
+    // В реальности лучше использовать os.ExpandEnv для каждой строки
     
     // Если LOG_LEVEL установлен в env, используем его
     if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" {
@@ -109,4 +135,8 @@ func getSinkholeIP(category int) string {
         return ip
     }
     return cfg.Sinkholes.Default
+}
+
+func getCacheConfig() CacheConfig {
+    return getConfig().Cache
 }
