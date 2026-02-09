@@ -83,8 +83,7 @@ func (c *CacheManager) get(domain string) *DomainResult {
     
     // 2. Пробуем Valkey
     if c.valkey != nil && (c.strategy == "hybrid" || c.strategy == "valkey_only") {
-        ctx, cancel := context.WithTimeout(context.Background(), 
-            getConfig().Timeouts.CacheRead)
+        ctx, cancel := context.WithTimeout(context.Background(), getConfig().Timeouts.CacheRead)
         defer cancel()
         
         data, err := c.valkey.Get(ctx, cacheKey(domain)).Bytes()
@@ -93,8 +92,7 @@ func (c *CacheManager) get(domain string) *DomainResult {
             if err := json.Unmarshal(data, &result); err == nil {
                 // Сохраняем в memory кеш для следующих запросов
                 if c.memoryCache != nil {
-                    c.memoryCache.SetWithTTL(domain, &result, 1,
-                        time.Duration(result.TTL)*time.Second)
+                    c.memoryCache.SetWithTTL(domain, &result, 1, time.Duration(result.TTL)*time.Second)
                 }
                 
                 logDebug("Valkey cache hit", "domain", domain)
@@ -124,14 +122,11 @@ func (c *CacheManager) set(domain string, result *DomainResult) {
                 return
             }
             
-            ctx, cancel := context.WithTimeout(context.Background(),
-                getConfig().Timeouts.CacheWrite)
+            ctx, cancel := context.WithTimeout(context.Background(), getConfig().Timeouts.CacheWrite)
             defer cancel()
             
             if err := c.valkey.SetEx(ctx, cacheKey(domain), data, ttl).Err(); err != nil {
-                logWarn("Failed to cache result in Valkey",
-                    "domain", domain,
-                    "error", err)
+                logWarn("Failed to cache result in Valkey", "domain", domain, "error", err)
             }
         }()
     }
