@@ -5,8 +5,6 @@ import (
     "encoding/json"
     "net/http"
     "time"
-    
-    "github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // HTTPServer - HTTP сервер для метрик и health
@@ -17,8 +15,7 @@ type HTTPServer struct {
 
 func newHTTPServer(address string, engine *CheckEngine) *HTTPServer {
     mux := http.NewServeMux()
-    
-    server := &HTTPServer{
+    srv := &HTTPServer{
         engine: engine,
         server: &http.Server{
             Addr:         address,
@@ -30,15 +27,15 @@ func newHTTPServer(address string, engine *CheckEngine) *HTTPServer {
     }
     
     // Регистрируем обработчики
-    mux.Handle("/metrics", promhttp.Handler())
-    mux.HandleFunc("/health", server.healthHandler)
-    mux.HandleFunc("/stats", server.statsHandler)
-    mux.HandleFunc("/", server.defaultHandler)
+    mux.HandleFunc("/health", srv.healthHandler)
+    mux.HandleFunc("/stats", srv.statsHandler)
+    mux.HandleFunc("/", srv.defaultHandler)
     
-    return server
+    return srv
 }
 
 func (s *HTTPServer) start() error {
+    logInfo("HTTP server listening", "address", s.server.Addr)
     return s.server.ListenAndServe()
 }
 
@@ -48,6 +45,7 @@ func (s *HTTPServer) shutdown(ctx context.Context) error {
 
 func (s *HTTPServer) healthHandler(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
     
     health := map[string]interface{}{
         "status":    "healthy",
@@ -63,7 +61,7 @@ func (s *HTTPServer) statsHandler(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Content-Type", "application/json")
     
     if s.engine == nil {
-        http.Error(w, `{"error": "engine not initialized"}`, http.StatusServiceUnavailable)
+        json.NewEncoder(w).Encode(map[string]string{"error": "engine not initialized"})
         return
     }
     
@@ -79,8 +77,4 @@ func (s *HTTPServer) defaultHandler(w http.ResponseWriter, r *http.Request) {
     
     w.Header().Set("Content-Type", "text/plain")
     w.Write([]byte("DNS Security Proxy v1.0.0\n"))
-    w.Write([]byte("\nEndpoints:\n"))
-    w.Write([]byte("  GET /health  - Health check\n"))
-    w.Write([]byte("  GET /stats   - Statistics\n"))
-    w.Write([]byte("  GET /metrics - Prometheus metrics\n"))
 }
