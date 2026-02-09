@@ -168,13 +168,15 @@ newgrp docker
 
 # Установка утилит
 sudo dnf install -y git curl wget bind-utils jq openssl
+```
 2. Клонирование репозитория:
-
+```
 # С токеном GitHub (для приватного репо)
 git clone https://TOKEN@github.com/yourusername/dnscloud-go.git
 cd dnscloud-go
+```
 3. Настройка и запуск:
-
+```
 # Даем права на выполнение
 chmod +x setup.sh
 
@@ -188,8 +190,9 @@ chmod +x setup.sh
 # 4. Сборку Docker образов
 # 5. Запуск всех сервисов
 # 6. Проверку работоспособности
+```
 4. Проверка работы:
-
+```
 # Проверка статуса
 docker compose ps
 
@@ -203,8 +206,9 @@ curl http://localhost:9091/metrics
 
 # Просмотр логов
 docker compose logs -f dns-proxy
+```
 5. Настройка firewall (если нужно):
-bash
+```
 # Разрешаем порты
 sudo firewall-cmd --permanent --add-port=53/tcp
 sudo firewall-cmd --permanent --add-port=53/udp
