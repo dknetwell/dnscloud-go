@@ -1,152 +1,136 @@
 package main
 
 import (
-    "fmt"
-    "os"
+    "context"
     "time"
-    
-    "github.com/joho/godotenv"
-    "gopkg.in/yaml.v3"
 )
 
-// Структуры конфигурации
-type TimeoutConfig struct {
-    Total       time.Duration `yaml:"total"`
-    CloudAPI    time.Duration `yaml:"cloud_api"`
-    CacheRead   time.Duration `yaml:"cache_read"`
-    CacheWrite  time.Duration `yaml:"cache_write"`
-    DNSResponse time.Duration `yaml:"dns_response"`
+// CheckEngine - движок проверок с контролем SLA
+type CheckEngine struct {
+    cache     *CacheManager
+    apiClient *CloudAPIClient
+    metrics   *MetricsCollector
 }
 
-type CloudAPIConfig struct {
-    URL       string        `yaml:"url"`
-    Key       string        `yaml:"key"`
-    RateLimit int           `yaml:"rate_limit"`
-    Burst     int           `yaml:"burst"`
-    Timeout   time.Duration `yaml:"timeout"`
-}
-
-type MemoryCacheConfig struct {
-    MaxSizeMB        int           `yaml:"max_size_mb"`
-    DefaultExpiration time.Duration `yaml:"default_expiration"`
-    CleanupInterval  time.Duration `yaml:"cleanup_interval"`
-}
-
-type ValkeyCacheConfig struct {
-    Address     string        `yaml:"address"`
-    Password    string        `yaml:"password"`
-    PoolSize    int           `yaml:"pool_size"`
-    ReadTimeout time.Duration `yaml:"read_timeout"`
-    WriteTimeout time.Duration `yaml:"write_timeout"`
-}
-
-type CacheConfig struct {
-    Strategy string            `yaml:"strategy"`
-    Memory   MemoryCacheConfig `yaml:"memory"`
-    Valkey   ValkeyCacheConfig `yaml:"valkey"`
-}
-
-type SinkholeConfig struct {
-    Categories map[int]string `yaml:"categories"`
-    Default    string         `yaml:"default"`
-    IPv6       string         `yaml:"ipv6"`
-}
-
-type TTLConfig struct {
-    ByCategory map[int]int `yaml:"by_category"`
-    Fallback   int         `yaml:"fallback"`
-    Min        int         `yaml:"min"`
-    Max        int         `yaml:"max"`
-}
-
-type MetricsConfig struct {
-    PrometheusEnabled bool          `yaml:"prometheus_enabled"`
-    Prefix           string         `yaml:"prefix"`
-    CollectInterval  time.Duration `yaml:"collect_interval"`
-}
-
-type Config struct {
-    DNSListen  string        `yaml:"dns_listen"`
-    HTTPListen string        `yaml:"http_listen"`
-    LogLevel   string        `yaml:"log_level"`
-    LogFormat  string        `yaml:"log_format"`
-    Timeouts   TimeoutConfig `yaml:"timeouts"`
-    CloudAPI   CloudAPIConfig `yaml:"cloud_api"`
-    Cache      CacheConfig   `yaml:"cache"`
-    Sinkholes  SinkholeConfig `yaml:"sinkholes"`
-    TTL        TTLConfig     `yaml:"ttl"`
-    Metrics    MetricsConfig `yaml:"metrics"`
-}
-
-var config *Config
-
-func loadConfig() error {
-    godotenv.Load()
-    
-    configPath := "config/config.yaml"
-    if _, err := os.Stat(configPath); os.IsNotExist(err) {
-        return fmt.Errorf("config file not found: %s", configPath)
+func newCheckEngine(cache *CacheManager, apiClient *CloudAPIClient) *CheckEngine {
+    return &CheckEngine{
+        cache:     cache,
+        apiClient: apiClient,
+        metrics:   newMetricsCollector(),
     }
+}
+
+func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainResult, error) {
+    start := time.Now()
     
-    data, err := os.ReadFile(configPath)
-    if err != nil {
-        return fmt.Errorf("failed to read config file: %w", err)
-    }
+    // Устанавливаем общий таймаут SLA
+    slaCtx, cancel := context.WithTimeout(ctx, getConfig().Timeouts.Total)
+    defer cancel()
     
-    // Заменяем переменные окружения
-    yamlContent := string(data)
-    yamlContent = os.ExpandEnv(yamlContent)
+    // Канал для результата
+    resultChan := make(chan *DomainResult, 1)
+    errorChan := make(chan error, 1)
     
-    var cfg Config
-    if err := yaml.Unmarshal([]byte(yamlContent), &cfg); err != nil {
-        return fmt.Errorf("failed to parse config: %w", err)
-    }
+    // Запускаем проверку в горутине
+    go e.processCheck(slaCtx, domain, resultChan, errorChan)
     
-    // Дополнительные замены
-    if cfg.CloudAPI.Key == "" {
-        cfg.CloudAPI.Key = os.Getenv("CLOUD_API_KEY")
-    }
-    
-    if cfg.Cache.Valkey.Password == "" {
-        cfg.Cache.Valkey.Password = os.Getenv("VALKEY_PASSWORD")
-    }
-    
-    // Исправленная строка 114 - убрана обратная косая черта перед $
-    if cfg.CloudAPI.URL == "" || cfg.CloudAPI.URL == "${CLOUD_API_URL:-https://172.16.10.33/api/}" {
-        if envURL := os.Getenv("CLOUD_API_URL"); envURL != "" {
-            cfg.CloudAPI.URL = envURL
-        } else {
-            cfg.CloudAPI.URL = "https://172.16.10.33/api/"
+    // Ждем результат или таймаут SLA
+    select {
+    case result := <-resultChan:
+        result.ProcessingTime = time.Since(start)
+        
+        // Записываем метрику
+        e.metrics.recordCheckDuration(result.ProcessingTime, result.Source)
+        
+        // Логируем если близко к лимиту
+        if result.ProcessingTime > 80*time.Millisecond {
+            logWarn("Check close to SLA limit",
+                "domain", domain,
+                "duration", result.ProcessingTime.String(),
+                "sla_limit", getConfig().Timeouts.Total.String())
         }
+        
+        return result, nil
+        
+    case err := <-errorChan:
+        return e.createFallbackResult(domain, "error"), err
+        
+    case <-slaCtx.Done():
+        // SLA ТАЙМАУТ - возвращаем fallback
+        logWarn("SLA timeout reached",
+            "domain", domain,
+            "timeout", getConfig().Timeouts.Total.String())
+        
+        e.metrics.incTimeout()
+        return e.createFallbackResult(domain, "timeout"), nil
+    }
+}
+
+func (e *CheckEngine) processCheck(ctx context.Context, domain string, 
+    resultChan chan<- *DomainResult, errorChan chan<- error) {
+    
+    // 1. Проверка кеша (быстрый путь)
+    if cached := e.cache.get(domain); cached != nil {
+        cached.Source = "cache"
+        resultChan <- cached
+        e.metrics.incCacheHit()
+        return
     }
     
-    if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" {
-        cfg.LogLevel = envLevel
+    e.metrics.incCacheMiss()
+    
+    // 2. Проверка через Cloud API
+    apiResult, err := e.apiClient.check(ctx, domain)
+    if err != nil {
+        logWarn("Cloud API check failed",
+            "domain", domain,
+            "error", err)
+        
+        // Возвращаем fallback результат
+        resultChan <- e.createFallbackResult(domain, "api_error")
+        return
     }
     
-    config = &cfg
-    return nil
+    // 3. Создаем результат
+    result := e.createResultFromAPI(apiResult)
+    
+    // 4. Кешируем результат (асинхронно)
+    go e.cache.set(domain, result)
+    
+    resultChan <- result
 }
 
-func getConfig() *Config {
-    if config == nil {
-        panic("Config not loaded. Call loadConfig() first.")
+func (e *CheckEngine) createResultFromAPI(apiResult *APIResponse) *DomainResult {
+    result := &DomainResult{
+        Domain:   apiResult.Domain,
+        Category: apiResult.Category,
+        TTL:      getTTLByCategory(apiResult.Category),
+        Source:   "cloud_api",
+        Timestamp: time.Now(),
     }
-    return config
+    
+    // Определяем действие по категории
+    if apiResult.Category == 0 || apiResult.Category == 9 {
+        result.Action = "allow"
+    } else {
+        result.Action = "block"
+        result.IP = getSinkholeIP(apiResult.Category)
+    }
+    
+    return result
 }
 
-func getTTLByCategory(category int) int {
-    cfg := getConfig()
-    if ttl, ok := cfg.TTL.ByCategory[category]; ok {
-        return ttl
+func (e *CheckEngine) createFallbackResult(domain, reason string) *DomainResult {
+    return &DomainResult{
+        Domain:   domain,
+        Action:   "allow",  // В случае ошибки разрешаем
+        Category: 0,
+        TTL:      getTTLByCategory(0),
+        Source:   "fallback:" + reason,
+        Timestamp: time.Now(),
     }
-    return cfg.TTL.Fallback
 }
 
-func getSinkholeIP(category int) string {
-    cfg := getConfig()
-    if ip, ok := cfg.Sinkholes.Categories[category]; ok {
-        return ip
-    }
-    return cfg.Sinkholes.Default
+func (e *CheckEngine) getStats() *Stats {
+    return e.metrics.getStats()
 }
