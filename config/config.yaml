@@ -1,47 +1,47 @@
 # DNS Proxy конфигурация
 dns_listen: "0.0.0.0:5353"
 http_listen: "0.0.0.0:8054"
-log_level: "${LOG_LEVEL:-info}"
+log_level: "info"
 log_format: "json"
 
 # ТАЙМАУТЫ ДЛЯ КОНТРОЛЯ SLA 100ms
 timeouts:
-  total: 95ms          # Общий таймаут (SLA 95ms + 5ms CoreDNS = 100ms)
-  cloud_api: 50ms      # Таймаут Cloud API
-  cache_read: 5ms      # Чтение из кеша
-  cache_write: 100ms   # Запись в кеш (async)
-  dns_response: 10ms   # Формирование DNS ответа
+  total: 95ms
+  cloud_api: 50ms
+  cache_read: 5ms
+  cache_write: 100ms
+  dns_response: 10ms
 
 cloud_api:
-  url: "${CLOUD_API_URL:-https://172.16.10.33/api/}"
+  url: "https://172.16.10.33/api/"
   key: "${CLOUD_API_KEY}"
-  rate_limit: ${RATE_LIMIT_RPS:-5}
+  rate_limit: 5  # Убрали ${RATE_LIMIT_RPS:-5}
   burst: 2
   timeout: 50ms
 
 sinkholes:
   categories:
-    1: "0.0.0.0"    # malware
-    2: "0.0.0.1"    # phishing
-    3: "0.0.0.2"    # C&C
-    8: "0.0.0.3"    # proxy
+    1: "0.0.0.0"
+    2: "0.0.0.1"
+    3: "0.0.0.2"
+    8: "0.0.0.3"
   default: "0.0.0.0"
   ipv6: "::1"
 
 ttl:
   by_category:
-    0: 300      # benign (5 минут)
-    1: 3600     # malware (1 час)
-    2: 3600     # phishing (1 час)
-    3: 3600     # C&C (1 час)
-    8: 3600     # proxy (1 час)
-    9: 86400    # allowlist (24 часа)
+    0: 300
+    1: 3600
+    2: 3600
+    3: 3600
+    8: 3600
+    9: 86400
   fallback: 300
   min: 30
   max: 86400
 
 cache:
-  strategy: "hybrid"  # memory + valkey
+  strategy: "hybrid"
   memory:
     max_size_mb: 100
     default_expiration: 5m
