@@ -53,3 +53,55 @@ cp .env.example .env
 # 3. Запустите
 chmod +x setup.sh
 ./setup.sh
+
+
+Проверка
+bash
+# Проверка DNS
+dig @127.0.0.1 google.com
+
+# Проверка health
+curl http://localhost:8080/health
+curl http://localhost:8054/health
+
+# Метрики
+curl http://localhost:9091/metrics
+curl http://localhost:8054/metrics
+
+
+Конфигурация
+Основные настройки (.env)
+bash
+CLOUD_API_KEY=ваш_ключ
+VALKEY_PASSWORD=SecurePass123!
+LOG_LEVEL=info
+RATE_LIMIT_RPS=5
+Детальные настройки (config/config.yaml)
+Таймауты и SLA
+
+Кеширование
+
+Sinkhole IP
+
+TTL настройки
+
+Логирование
+
+Мониторинг
+Endpoints
+CoreDNS: :8080/health, :9091/metrics
+
+DNS Proxy: :8054/health, :8054/metrics
+
+Valkey: :6379 (redis-cli)
+
+Логи
+bash
+# Логи DNS Proxy
+docker compose logs -f dns-proxy
+
+# Логи CoreDNS
+docker compose logs -f coredns
+
+# Логи Valkey
+docker compose logs -f dns-valkey
