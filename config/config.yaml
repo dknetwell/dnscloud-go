@@ -1,0 +1,69 @@
+server:
+  dns_listen: ":5353"
+  http_listen: ":8054"
+  udp_buffer_size: 4096
+  prometheus_path: "/metrics"
+  health_path: "/health"
+  read_timeout: 10s
+  write_timeout: 10s
+  idle_timeout: 60s
+
+# ТАЙМАУТЫ ДЛЯ КОНТРОЛЯ SLA 100ms
+timeouts:
+  total: 95ms          # Общий таймаут (SLA 95ms + 5ms CoreDNS = 100ms)
+  cloud_api: 50ms      # Таймаут Cloud API
+  cache_read: 5ms      # Чтение из кеша
+  cache_write: 100ms   # Запись в кеш (async)
+  dns_response: 10ms   # Формирование DNS ответа
+
+cloud_api:
+  url: "${CLOUD_API_URL}"
+  key: "${CLOUD_API_KEY}"
+  rate_limit: ${RATE_LIMIT_RPS:-5}
+  burst: 2
+  timeout: ${timeouts.cloud_api}
+
+sinkholes:
+  categories:
+    1: "0.0.0.0"    # malware
+    2: "0.0.0.1"    # phishing
+    3: "0.0.0.2"    # C&C
+    8: "0.0.0.3"    # proxy
+  default: "0.0.0.0"
+  ipv6: "::1"
+
+ttl:
+  by_category:
+    0: 300      # benign (5 минут)
+    1: 3600     # malware (1 час)
+    2: 3600     # phishing (1 час)
+    3: 3600     # C&C (1 час)
+    8: 3600     # proxy (1 час)
+    9: 86400    # allowlist (24 часа)
+  fallback: 300
+  min: 30
+  max: 86400
+
+cache:
+  memory:
+    max_size_mb: 100
+    default_expiration: 5m
+    cleanup_interval: 10m
+  valkey:
+    address: "valkey:6379"
+    password: "${VALKEY_PASSWORD}"
+    pool_size: 100
+    read_timeout: ${timeouts.cache_read}
+    write_timeout: ${timeouts.cache_write}
+  strategy: "hybrid"  # memory + valkey
+
+logging:
+  level: "${LOG_LEVEL:-info}"
+  format: "json"
+  output: "stdout"
+  file_path: "/var/log/dns-security.log"
+
+monitoring:
+  prometheus_enabled: true
+  metrics_prefix: "dns_proxy_"
+  collect_interval: 30s
