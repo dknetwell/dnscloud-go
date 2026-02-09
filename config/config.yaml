@@ -15,7 +15,7 @@ timeouts:
 cloud_api:
   url: "https://172.16.10.33/api/"
   key: "${CLOUD_API_KEY}"
-  rate_limit: 5  # Убрали ${RATE_LIMIT_RPS:-5}
+  rate_limit: 5
   burst: 2
   timeout: 50ms
 
