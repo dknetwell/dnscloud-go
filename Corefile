@@ -1,11 +1,13 @@
-# DNS Security Proxy - CoreDNS конфигурация
+# DNS Security Proxy
+# Все протоколы → DNS Proxy через DNS-over-TCP
 
 .:53 {
-    # ВСЕ запросы форвардим в ваше приложение по TCP
+    # ВСЕ запросы форвардим в ваше приложение
     forward . dns-proxy:5353 {
         max_concurrent 10000
         expire 30s
         health_check 10s
+        policy sequential
         prefer_udp
     }
     
@@ -30,7 +32,7 @@
     bufsize 1232
 }
 
-# DNS-over-TLS (DoT) - отдельный блок
+# DNS-over-TLS (DoT) - отдельный серверный блок
 tls://.:853 {
     forward . dns-proxy:5353 {
         max_concurrent 10000
@@ -47,9 +49,10 @@ tls://.:853 {
     log
     errors
     prometheus :9091
+    bind 0.0.0.0
 }
 
-# DNS-over-HTTPS (DoH) - отдельный блок  
+# DNS-over-HTTPS (DoH) - отдельный серверный блок  
 https://.:443 {
     forward . dns-proxy:5353 {
         max_concurrent 10000
@@ -66,4 +69,5 @@ https://.:443 {
     log
     errors
     prometheus :9091
+    bind 0.0.0.0
 }
