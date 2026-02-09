@@ -24,7 +24,7 @@ func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainRe
     start := time.Now()
     
     // Устанавливаем общий таймаут SLA
-    ctx, cancel := context.WithTimeout(ctx, getConfig().Timeouts.Total)
+    slaCtx, cancel := context.WithTimeout(ctx, getConfig().Timeouts.Total)
     defer cancel()
     
     // Канал для результата
@@ -32,7 +32,7 @@ func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainRe
     errorChan := make(chan error, 1)
     
     // Запускаем проверку в горутине
-    go e.processCheck(ctx, domain, resultChan, errorChan)
+    go e.processCheck(slaCtx, domain, resultChan, errorChan)
     
     // Ждем результат или таймаут SLA
     select {
@@ -55,7 +55,7 @@ func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainRe
     case err := <-errorChan:
         return e.createFallbackResult(domain, "error"), err
         
-    case <-ctx.Done():
+    case <-slaCtx.Done():
         // SLA ТАЙМАУТ - возвращаем fallback
         logWarn("SLA timeout reached",
             "domain", domain,
