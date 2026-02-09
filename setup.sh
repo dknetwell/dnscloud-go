@@ -85,14 +85,11 @@ fi
 # Исправляем права доступа к сертификатам
 chmod 644 certs/* 2>/dev/null || true
 
-# Создаем правильный Corefile
-echo "📝 Creating Corefile..."
+# Создаем правильный Corefile с фиксированным IP
+echo "📝 Creating Corefile with fixed IP..."
 cat > Corefile << 'EOF'
-# DNS Security Proxy
-# Все протоколы → DNS Proxy через DNS-over-TCP
-
 .:53 {
-    # ВСЕ запросы форвардим в ваше приложение
+    # ВСЕ запросы форвардим в DNS Proxy
     forward . dns-proxy:5353 {
         max_concurrent 10000
         expire 30s
@@ -101,31 +98,22 @@ cat > Corefile << 'EOF'
         prefer_udp
     }
     
-    # Кеширование
     cache {
         success 10000 3600 300
         denial 10000 3600 300
         prefetch 1000 10m 80%
     }
     
-    # Логирование
     log
     
-    # Обработка ошибок
     errors
     
-    # Метрики Prometheus
     prometheus :9091
-    
-    # Health check
     health :8080
-    
-    # Безопасность
     bind 0.0.0.0
     bufsize 1232
 }
 
-# DNS-over-TLS (DoT)
 tls://.:853 {
     forward . dns-proxy:5353 {
         max_concurrent 10000
@@ -145,7 +133,6 @@ tls://.:853 {
     bind 0.0.0.0
 }
 
-# DNS-over-HTTPS (DoH)
 https://.:443 {
     forward . dns-proxy:5353 {
         max_concurrent 10000
@@ -199,23 +186,44 @@ fi
 
 echo "🐳 Building and starting containers..."
 docker compose down 2>/dev/null || true
-docker compose up -d --build
+
+# Даем сети время очиститься
+sleep 2
+
+# Сначала запускаем сеть и базовые сервисы
+echo "  Creating network and base services..."
+docker compose up -d --build valkey
+sleep 5
+
+echo "  Starting DNS Proxy..."
+docker compose up -d --build dns-proxy
+sleep 10
+
+echo "  Starting CoreDNS..."
+docker compose up -d --build coredns
+sleep 15
 
 echo ""
-echo "⏳ Waiting for services to start (30 seconds)..."
-for i in {1..30}; do
-    echo -n "."
-    sleep 1
-done
-echo ""
+echo "⏳ Waiting for all services to stabilize (20 seconds)..."
+sleep 20
 
 echo ""
 echo "✅ Services Status:"
-timeout 5 docker compose ps 2>/dev/null || echo "⚠️  Could not get service status"
+docker compose ps
 
 echo ""
 echo "🧪 Testing services..."
 echo ""
+
+# Проверка DNS Proxy health (внутри контейнера)
+echo "Testing DNS Proxy health..."
+if docker compose exec -T dns-proxy wget -q -O- http://localhost:8054/health 2>/dev/null | grep -q "healthy"; then
+    echo "  ✅ DNS Proxy health: OK (internal)"
+else
+    echo "  ⚠️  DNS Proxy health: FAILED (internal)"
+    echo "  Checking logs..."
+    docker compose logs dns-proxy --tail=5 2>/dev/null | tail -5 || true
+fi
 
 # Проверка CoreDNS
 echo "Testing CoreDNS health..."
@@ -223,27 +231,16 @@ if timeout 10 curl -s -f http://localhost:8080/health 2>/dev/null | grep -q "OK"
     echo "  ✅ CoreDNS health: OK"
 else
     echo "  ⚠️  CoreDNS health: FAILED"
-    echo "  CoreDNS logs (last 3 lines):"
-    timeout 5 docker compose logs coredns --tail=3 2>/dev/null | tail -3 || true
+    echo "  CoreDNS logs:"
+    docker compose logs coredns --tail=3 2>/dev/null || true
 fi
 
-# Проверка DNS Proxy health
-echo "Testing DNS Proxy health..."
-if timeout 10 curl -s -f http://localhost:8054/health 2>/dev/null | grep -q "healthy"; then
-    echo "  ✅ DNS Proxy health: OK"
-else
-    echo "  ⚠️  DNS Proxy health: FAILED"
-    echo "  DNS Proxy logs (last 5 lines):"
-    timeout 5 docker compose logs dns-proxy --tail=5 2>/dev/null | tail -5 || true
-fi
-
-# Проверка Valkey - безопасно без зависания
+# Проверка Valkey
 echo "Testing Valkey connection..."
-VALKEY_HEALTH=$(timeout 5 docker compose ps valkey --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "")
-if [[ "$VALKEY_HEALTH" == "running" ]] || [[ "$VALKEY_HEALTH" == "healthy" ]]; then
-    echo "  ✅ Valkey: Container is $VALKEY_HEALTH"
+if docker compose ps valkey 2>/dev/null | grep -q "healthy"; then
+    echo "  ✅ Valkey: Container is healthy"
 else
-    echo "  ⚠️  Valkey: Status is '$VALKEY_HEALTH'"
+    echo "  ⚠️  Valkey: Container not healthy"
 fi
 
 echo ""
@@ -251,41 +248,38 @@ echo "🧪 Testing DNS service..."
 if command -v dig &> /dev/null; then
     echo "Testing with dig..."
     
-    # Даем еще время на полный запуск
-    sleep 5
+    # Даем еще время
+    sleep 10
     
-    # Тест UDP
-    echo -n "  UDP DNS: "
-    if UDP_OUTPUT=$(timeout 10 dig @127.0.0.1 example.com +short +time=3 +tries=2 2>&1); then
+    # Проверяем что DNS Proxy слушает порт
+    echo "  Checking DNS Proxy port..."
+    if docker compose exec -T dns-proxy netstat -tln 2>/dev/null | grep -q ":5353"; then
+        echo "    ✅ DNS Proxy listening on 5353"
+    else
+        echo "    ❌ DNS Proxy NOT listening on 5353"
+    fi
+    
+    # Тест DNS через CoreDNS
+    echo -n "  DNS via CoreDNS (UDP): "
+    if UDP_OUTPUT=$(timeout 10 dig @127.0.0.1 example.com +short 2>&1); then
         if echo "$UDP_OUTPUT" | head -1 | grep -q -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^[a-f0-9:]+$"; then
-            echo "✅ Responding"
+            echo "✅ Got IP response"
         else
-            echo "⚠️  Got response: $(echo "$UDP_OUTPUT" | head -1 | tr -d '\n')"
+            echo "⚠️  Response: $(echo "$UDP_OUTPUT" | head -1)"
         fi
     else
-        echo "⚠️  Timeout or connection refused"
+        echo "❌ Timeout or connection refused"
     fi
     
-    # Тест TCP
-    echo -n "  TCP DNS: "
-    if TCP_OUTPUT=$(timeout 10 dig @127.0.0.1 example.com +short +tcp +time=3 +tries=2 2>&1); then
+    echo -n "  DNS via CoreDNS (TCP): "
+    if TCP_OUTPUT=$(timeout 10 dig @127.0.0.1 example.com +short +tcp 2>&1); then
         if echo "$TCP_OUTPUT" | head -1 | grep -q -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^[a-f0-9:]+$"; then
-            echo "✅ Responding"
+            echo "✅ Got IP response"
         else
-            echo "⚠️  Got response: $(echo "$TCP_OUTPUT" | head -1 | tr -d '\n')"
+            echo "⚠️  Response: $(echo "$TCP_OUTPUT" | head -1)"
         fi
     else
-        echo "⚠️  Timeout or connection refused"
-    fi
-    
-    # Быстрая проверка DoT если openssl установлен
-    if command -v openssl &> /dev/null; then
-        echo -n "  DoT (TLS): "
-        if timeout 5 openssl s_client -connect 127.0.0.1:853 -quiet 2>&1 | head -1 | grep -q "Connected"; then
-            echo "✅ Port listening"
-        else
-            echo "⚠️  Port not accessible"
-        fi
+        echo "❌ Timeout or connection refused"
     fi
 else
     echo "  ℹ️  dig not installed, skipping DNS tests"
@@ -296,33 +290,13 @@ echo "========================================"
 echo "🚀 Setup completed!"
 echo "========================================"
 echo ""
-echo "🌐 Services configured:"
-echo "  Basic DNS (UDP):    udp://127.0.0.1:53"
-echo "  Basic DNS (TCP):    tcp://127.0.0.1:53"
-echo "  DNS-over-TLS:       tls://127.0.0.1:853"
-echo "  DNS-over-HTTPS:     https://127.0.0.1/dns-query"
-echo "  CoreDNS Health:     http://localhost:8080/health"
-echo "  CoreDNS Metrics:    http://localhost:9091/metrics"
-echo "  DNS Proxy Health:   http://localhost:8054/health"
-echo "  DNS Proxy Metrics:  http://localhost:8054/metrics"
+echo "🔧 Debug information:"
+docker compose exec dns-proxy netstat -tln 2>/dev/null || true
 echo ""
-echo "📊 Service status:"
-docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true
+echo "📊 For troubleshooting:"
+echo "  1. Check network: docker network inspect dnscloud-go_dns-net"
+echo "  2. Check DNS resolution: docker compose exec coredns ping dns-proxy"
+echo "  3. Check ports: docker compose port dns-proxy 5353"
 echo ""
-echo "🔧 Management commands:"
-echo "  docker compose logs -f dns-proxy      # View DNS proxy logs"
-echo "  docker compose logs -f coredns        # View CoreDNS logs"
-echo "  docker compose restart                # Restart all services"
-echo "  docker compose down                   # Stop all services"
-echo ""
-echo "📈 Monitoring:"
-echo "  curl http://localhost:8054/stats      # Get proxy statistics"
-echo "  curl http://localhost:8054/metrics    # Prometheus metrics"
-echo ""
-echo "⚠️  Troubleshooting:"
-echo "  1. Check all logs: docker compose logs"
-echo "  2. Restart specific service: docker compose restart [service]"
-echo "  3. Rebuild and restart: docker compose up -d --build"
-echo ""
-echo "⏹️  To stop all services: docker compose down"
+echo "⏹️  To stop: docker compose down"
 echo "========================================"
