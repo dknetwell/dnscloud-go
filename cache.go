@@ -31,7 +31,7 @@ func newCacheManager() *CacheManager {
     if cacheCfg.Strategy == "hybrid" || cacheCfg.Strategy == "memory_only" {
         memoryCache, err := ristretto.NewCache(&ristretto.Config{
             NumCounters: 1_000_000,
-            MaxCost:     int64(cacheCfg.Memory.MaxSizeMB) << 20, // Исправлено: cacheCfg.Memory.MaxSizeMB
+            MaxCost:     int64(cacheCfg.Memory.MaxSizeMB) << 20,
             BufferItems: 64,
         })
         
@@ -45,8 +45,8 @@ func newCacheManager() *CacheManager {
     // Инициализируем Valkey
     if cacheCfg.Strategy == "hybrid" || cacheCfg.Strategy == "valkey_only" {
         valkeyClient := redis.NewClient(&redis.Options{
-            Addr:     cacheCfg.Valkey.Address, // Исправлено: cacheCfg.Valkey.Address
-            Password: cacheCfg.Valkey.Password, // Исправлено: cacheCfg.Valkey.Password
+            Addr:     cacheCfg.Valkey.Address,
+            Password: cacheCfg.Valkey.Password,
             DB:       0,
             PoolSize: cacheCfg.Valkey.PoolSize,
         })
