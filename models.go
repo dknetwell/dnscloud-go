@@ -14,12 +14,6 @@ type DomainResult struct {
     ProcessingTime time.Duration `json:"processing_time,omitempty"`
 }
 
-// CheckRequest - запрос на проверку
-type CheckRequest struct {
-    Domain string `json:"domain"`
-    Client string `json:"client,omitempty"`
-}
-
 // APIResponse - ответ Cloud API
 type APIResponse struct {
     Domain   string `json:"domain"`
