@@ -21,16 +21,17 @@ type CacheManager struct {
 
 func newCacheManager() *CacheManager {
     cfg := getConfig()
+    cacheCfg := cfg.Cache
     
     manager := &CacheManager{
-        strategy: cfg.Cache.Strategy,
+        strategy: cacheCfg.Strategy,
     }
     
     // Инициализируем memory кеш
-    if cfg.Cache.Strategy == "hybrid" || cfg.Cache.Strategy == "memory_only" {
+    if cacheCfg.Strategy == "hybrid" || cacheCfg.Strategy == "memory_only" {
         memoryCache, err := ristretto.NewCache(&ristretto.Config{
             NumCounters: 1_000_000,
-            MaxCost:     int64(cfg.Cache.MemoryMaxSize) << 20,
+            MaxCost:     int64(cacheCfg.Memory.MaxSizeMB) << 20, // Исправлено: cacheCfg.Memory.MaxSizeMB
             BufferItems: 64,
         })
         
@@ -42,12 +43,12 @@ func newCacheManager() *CacheManager {
     }
     
     // Инициализируем Valkey
-    if cfg.Cache.Strategy == "hybrid" || cfg.Cache.Strategy == "valkey_only" {
+    if cacheCfg.Strategy == "hybrid" || cacheCfg.Strategy == "valkey_only" {
         valkeyClient := redis.NewClient(&redis.Options{
-            Addr:     cfg.Cache.ValkeyAddr,
-            Password: cfg.Cache.ValkeyPass,
+            Addr:     cacheCfg.Valkey.Address, // Исправлено: cacheCfg.Valkey.Address
+            Password: cacheCfg.Valkey.Password, // Исправлено: cacheCfg.Valkey.Password
             DB:       0,
-            PoolSize: 100,
+            PoolSize: cacheCfg.Valkey.PoolSize,
         })
         
         // Проверяем соединение
@@ -58,12 +59,12 @@ func newCacheManager() *CacheManager {
             logError("Failed to connect to Valkey", err)
         } else {
             manager.valkey = valkeyClient
-            logInfo("Valkey cache connected", "address", cfg.Cache.ValkeyAddr)
+            logInfo("Valkey cache connected", "address", cacheCfg.Valkey.Address)
         }
     }
     
     logInfo("Cache manager initialized",
-        "strategy", cfg.Cache.Strategy,
+        "strategy", cacheCfg.Strategy,
         "memory_enabled", manager.memoryCache != nil,
         "valkey_enabled", manager.valkey != nil)
     
@@ -83,7 +84,8 @@ func (c *CacheManager) get(domain string) *DomainResult {
     
     // 2. Пробуем Valkey
     if c.valkey != nil && (c.strategy == "hybrid" || c.strategy == "valkey_only") {
-        ctx, cancel := context.WithTimeout(context.Background(), getConfig().Timeouts.CacheRead)
+        ctx, cancel := context.WithTimeout(context.Background(), 
+            getConfig().Timeouts.CacheRead)
         defer cancel()
         
         data, err := c.valkey.Get(ctx, cacheKey(domain)).Bytes()
@@ -92,7 +94,8 @@ func (c *CacheManager) get(domain string) *DomainResult {
             if err := json.Unmarshal(data, &result); err == nil {
                 // Сохраняем в memory кеш для следующих запросов
                 if c.memoryCache != nil {
-                    c.memoryCache.SetWithTTL(domain, &result, 1, time.Duration(result.TTL)*time.Second)
+                    c.memoryCache.SetWithTTL(domain, &result, 1,
+                        time.Duration(result.TTL)*time.Second)
                 }
                 
                 logDebug("Valkey cache hit", "domain", domain)
@@ -122,11 +125,13 @@ func (c *CacheManager) set(domain string, result *DomainResult) {
                 return
             }
             
-            ctx, cancel := context.WithTimeout(context.Background(), getConfig().Timeouts.CacheWrite)
+            ctx, cancel := context.WithTimeout(context.Background(),
+                getConfig().Timeouts.CacheWrite)
             defer cancel()
             
             if err := c.valkey.Set(ctx, cacheKey(domain), data, ttl).Err(); err != nil {
-                logWarn("Failed to cache result in Valkey", "domain", domain, "error", err)
+                logWarn("Failed to cache result in Valkey",
+                    "domain", domain, "error", err)
             }
         }()
     }
