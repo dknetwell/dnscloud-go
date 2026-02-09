@@ -1,16 +1,15 @@
 services:
-  # CoreDNS как фронтенд
   coredns:
     image: coredns/coredns:1.14.1
     container_name: dns-frontend
     restart: unless-stopped
     ports:
-      - "53:53/udp"      # Basic DNS UDP
-      - "53:53/tcp"      # Basic DNS TCP
-      - "853:853/tcp"    # DNS-over-TLS
-      - "443:443/tcp"    # DNS-over-HTTPS
-      - "8080:8080"      # Health
-      - "9091:9091"      # Prometheus
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "853:853/tcp"
+      - "443:443/tcp"
+      - "8080:8080"
+      - "9091:9091"
     volumes:
       - ./Corefile:/Corefile:ro
       - ./certs:/certs:ro
@@ -25,7 +24,6 @@ services:
       timeout: 5s
       retries: 3
 
-  # DNS Proxy приложение
   dns-proxy:
     build: .
     container_name: dns-proxy
@@ -48,7 +46,6 @@ services:
       timeout: 5s
       retries: 3
 
-  # Valkey кеш
   valkey:
     image: valkey/valkey:7.2.5-alpine
     container_name: dns-valkey
@@ -65,17 +62,14 @@ services:
     networks:
       - dns-net
     healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:-SecurePass123!}", "ping"]
+      test: ["CMD-SHELL", "echo 'ping' | valkey-cli -a $${VALKEY_PASSWORD} --no-auth-warning | grep PONG"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 3
 
 networks:
   dns-net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
 
 volumes:
   valkey-data:
