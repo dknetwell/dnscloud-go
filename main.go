@@ -3,14 +3,10 @@ package main
 import (
     "context"
     "fmt"
-    "net"
     "os"
     "os/signal"
     "syscall"
     "time"
-    
-    "github.com/miekg/dns"
-    "github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
