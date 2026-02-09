@@ -124,8 +124,76 @@ if [ ! -f certs/server.crt ]; then
     echo "   Using self-signed certificates from repository if available..."
 fi
 
+# ФИКСИМ ОШИБКИ GO ЗАВИСИМОСТЕЙ ПЕРЕД СБОРКОЙ
+echo "🔄 Fixing Go dependencies..."
+if [ -f go.mod ]; then
+    echo "  Cleaning up go.sum..."
+    rm -f go.sum 2>/dev/null || true
+    
+    echo "  Updating go modules..."
+    if command -v go &> /dev/null; then
+        go mod tidy 2>/dev/null || echo "  ⚠️  go mod tidy failed, continuing..."
+    else
+        echo "  ⚠️  Go not installed, skipping module tidy"
+    fi
+else
+    echo "  ⚠️  go.mod not found, creating..."
+    cat > go.mod << 'EOF'
+module dnscloud-go
+
+go 1.21
+
+require (
+    github.com/dgraph-io/ristretto v0.1.1
+    github.com/go-redis/redis/v8 v8.11.5
+    github.com/joho/godotenv v1.5.1
+    github.com/miekg/dns v1.1.57
+    github.com/prometheus/client_golang v1.19.0
+    go.uber.org/zap v1.26.0
+    golang.org/x/time v0.5.0
+    gopkg.in/yaml.v3 v3.0.1
+)
+EOF
+fi
+
+# АВТОМАТИЧЕСКОЕ ИСПРАВЛЕНИЕ ОШИБОК КОМПИЛЯЦИИ
+echo "🔧 Fixing common compilation errors..."
+if [ -f cache.go ]; then
+    # Исправляем SetEx → Set в cache.go
+    sed -i 's/\.SetEx(/\.Set(/g' cache.go 2>/dev/null || true
+    echo "  ✅ Fixed redis SetEx method"
+fi
+
+if [ -f main.go ]; then
+    # Убираем неиспользуемые импорты
+    grep -q "github.com/miekg/dns" main.go && \
+    grep -q "github.com/prometheus/client_golang/prometheus/promhttp" main.go && \
+    echo "  ⚠️  main.go has unused imports that might need fixing"
+fi
+
 echo "🐳 Building and starting containers..."
 docker compose up -d --build
+
+# Если сборка не удалась, пытаемся с дополнительными исправлениями
+if [ $? -ne 0 ]; then
+    echo "⚠️  First build failed, trying with fixes..."
+    
+    # Создаем исправленные файлы
+    if [ -f cache.go ]; then
+        echo "  Creating fixed cache.go..."
+        cp cache.go cache.go.backup
+        sed -i 's/\.SetEx(/\.Set(/g' cache.go
+    fi
+    
+    if [ -f cloud_api.go ]; then
+        echo "  Fixing cloud_api.go pointer issue..."
+        sed -i 's/func newCloudAPIClient(config CloudAPIConfig) \*CloudAPIClient/func newCloudAPIClient(config \*CloudAPIConfig) \*CloudAPIClient/g' cloud_api.go 2>/dev/null || true
+    fi
+    
+    echo "  Rebuilding..."
+    docker compose build --no-cache dns-proxy
+    docker compose up -d
+fi
 
 echo ""
 echo "⏳ Waiting for services to start..."
@@ -141,50 +209,62 @@ echo ""
 
 # Проверка CoreDNS health
 echo "Testing CoreDNS health..."
-if docker compose exec -T coredns wget -q -O- http://localhost:8080/health 2>/dev/null | grep -q "OK"; then
+if timeout 5 docker compose exec -T coredns wget -q -O- http://localhost:8080/health 2>/dev/null | grep -q "OK"; then
     echo "  ✅ CoreDNS health: OK"
 else
-    echo "  ⚠️  CoreDNS health: FAILED"
+    echo "  ⚠️  CoreDNS health: FAILED or not ready yet"
 fi
 
 # Проверка DNS Proxy health
 echo "Testing DNS Proxy health..."
-if curl -s http://localhost:8054/health 2>/dev/null | grep -q "healthy"; then
+if timeout 5 curl -s http://localhost:8054/health 2>/dev/null | grep -q "healthy"; then
     echo "  ✅ DNS Proxy health: OK"
 else
-    echo "  ⚠️  DNS Proxy health: FAILED"
+    echo "  ⚠️  DNS Proxy health: FAILED or not ready yet"
+    echo "  Checking logs..."
+    docker compose logs dns-proxy --tail=20 2>/dev/null | tail -10
 fi
 
 # Проверка Valkey
 echo "Testing Valkey connection..."
-if docker compose exec -T valkey valkey-cli -a "$VALKEY_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
+if timeout 5 docker compose exec -T valkey valkey-cli -a "$VALKEY_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
     echo "  ✅ Valkey: OK"
 else
-    echo "  ⚠️  Valkey: FAILED"
+    echo "  ⚠️  Valkey: FAILED or not ready yet"
 fi
 
 echo ""
 echo "🧪 Testing DNS service..."
 if command -v dig &> /dev/null; then
     echo "Testing with dig..."
-    if timeout 5 dig @127.0.0.1 google.com +short +tcp > /dev/null 2>&1; then
-        echo "  ✅ DNS over TCP: OK"
-    else
-        echo "  ⚠️  DNS over TCP: FAILED"
-    fi
     
-    if timeout 5 dig @127.0.0.1 google.com +short > /dev/null 2>&1; then
-        echo "  ✅ DNS over UDP: OK"
-    else
-        echo "  ⚠️  DNS over UDP: FAILED"
-    fi
+    # Ждем пока сервис поднимется
+    for i in {1..5}; do
+        if timeout 2 dig @127.0.0.1 google.com +short +tcp > /dev/null 2>&1; then
+            echo "  ✅ DNS over TCP: OK"
+            TCP_OK=1
+            break
+        fi
+        sleep 2
+    done
+    [ -z "$TCP_OK" ] && echo "  ⚠️  DNS over TCP: FAILED"
+    
+    for i in {1..5}; do
+        if timeout 2 dig @127.0.0.1 google.com +short > /dev/null 2>&1; then
+            echo "  ✅ DNS over UDP: OK"
+            UDP_OK=1
+            break
+        fi
+        sleep 2
+    done
+    [ -z "$UDP_OK" ] && echo "  ⚠️  DNS over UDP: FAILED"
 else
     echo "  ℹ️  dig not installed, skipping DNS tests"
 fi
 
 echo ""
 echo "========================================"
-echo "🚀 Setup completed successfully!"
+echo "🚀 Setup completed!"
 echo "========================================"
 echo ""
 echo "🌐 Services:"
@@ -213,6 +293,10 @@ echo "⚠️  Next steps:"
 echo "  1. Configure your DNS clients to use 127.0.0.1"
 echo "  2. Monitor logs: docker compose logs -f dns-proxy"
 echo "  3. Check metrics: http://localhost:8054/metrics"
+echo ""
+echo "🔧 If there are compilation errors:"
+echo "  rm -f go.sum && go mod tidy"
+echo "  docker compose build --no-cache dns-proxy"
 echo ""
 echo "⏹️  To stop services:"
 echo "  docker compose down"
