@@ -111,7 +111,8 @@ func loadConfig() error {
         cfg.Cache.Valkey.Password = os.Getenv("VALKEY_PASSWORD")
     }
     
-    if cfg.CloudAPI.URL == "" || cfg.CloudAPI.URL == "\${CLOUD_API_URL:-https://172.16.10.33/api/}" {
+    // Исправленная строка 114 - убрана обратная косая черта перед $
+    if cfg.CloudAPI.URL == "" || cfg.CloudAPI.URL == "${CLOUD_API_URL:-https://172.16.10.33/api/}" {
         if envURL := os.Getenv("CLOUD_API_URL"); envURL != "" {
             cfg.CloudAPI.URL = envURL
         } else {
