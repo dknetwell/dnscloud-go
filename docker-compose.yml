@@ -18,6 +18,12 @@ services:
       - NET_BIND_SERVICE
     networks:
       - dns-net
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    depends_on:
+      dns-proxy:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/health"]
       interval: 30s
@@ -45,6 +51,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   valkey:
     image: valkey/valkey:7.2.5-alpine
@@ -64,7 +72,7 @@ services:
     healthcheck:
       test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:-SecurePass123!}", "ping"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 3
 
 networks:
