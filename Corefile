@@ -17,14 +17,8 @@
         prefetch 1000 10m 80%
     }
     
-    log . {
-        class all
-        format combined
-    }
-    
-    errors {
-        consolidate 5s 100
-    }
+    log
+    errors
     
     prometheus :9091
     health :8080
