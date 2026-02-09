@@ -53,10 +53,10 @@ cp .env.example .env
 # 3. Запустите
 chmod +x setup.sh
 ./setup.sh
+```
 
+###Проверка
 
-Проверка
-bash
 # Проверка DNS
 dig @127.0.0.1 google.com
 
@@ -71,7 +71,7 @@ curl http://localhost:8054/metrics
 
 Конфигурация
 Основные настройки (.env)
-bash
+
 CLOUD_API_KEY=ваш_ключ
 VALKEY_PASSWORD=SecurePass123!
 LOG_LEVEL=info
@@ -96,7 +96,7 @@ DNS Proxy: :8054/health, :8054/metrics
 Valkey: :6379 (redis-cli)
 
 Логи
-bash
+
 # Логи DNS Proxy
 docker compose logs -f dns-proxy
 
