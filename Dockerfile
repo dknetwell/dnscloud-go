@@ -19,7 +19,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o dns-proxy .
 # Финальный образ
 FROM alpine:3.18
 
-RUN apk add --no-cache ca-certificates tzdata libcap && \
+# Устанавливаем wget для health checks и libcap для NET_BIND_SERVICE
+RUN apk add --no-cache ca-certificates tzdata libcap wget && \
     addgroup -g 1000 dns && \
     adduser -D -u 1000 -G dns dns
 
