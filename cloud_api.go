@@ -70,20 +70,3 @@ func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse
     
     return &apiResp, nil
 }
-
-func (c *CloudAPIClient) isAvailable() bool {
-    // Простая проверка ping
-    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-    defer cancel()
-    
-    req, _ := http.NewRequestWithContext(ctx, "GET", c.config.URL, nil)
-    req.Header.Set("X-API-Key", c.config.Key)
-    
-    resp, err := c.client.Do(req)
-    if err != nil {
-        return false
-    }
-    resp.Body.Close()
-    
-    return resp.StatusCode == http.StatusOK
-}
