@@ -125,7 +125,7 @@ func (c *CacheManager) set(domain string, result *DomainResult) {
             ctx, cancel := context.WithTimeout(context.Background(), getConfig().Timeouts.CacheWrite)
             defer cancel()
             
-            if err := c.valkey.SetEx(ctx, cacheKey(domain), data, ttl).Err(); err != nil {
+            if err := c.valkey.Set(ctx, cacheKey(domain), data, ttl).Err(); err != nil {
                 logWarn("Failed to cache result in Valkey", "domain", domain, "error", err)
             }
         }()
