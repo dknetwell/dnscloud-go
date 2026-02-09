@@ -105,3 +105,48 @@ docker compose logs -f coredns
 
 # Логи Valkey
 docker compose logs -f dns-valkey
+
+Расширение
+Добавление новой проверки
+Создайте файл в checker/clients/
+
+Реализуйте интерфейс Checker
+
+Добавьте конфигурацию в config/config.yaml
+
+Зарегистрируйте в checker/engine.go
+
+Изменение SLA
+Отредактируйте config/config.yaml:
+```
+timeouts:
+  total: 95ms  # Общий таймаут
+  cloud_api: 50ms
+```
+
+Управление
+Команды Makefile
+```
+make build    # Сборка
+make run      # Запуск
+make stop     # Остановка
+make logs     # Логи
+make test-dns # Тестирование
+```
+Docker Compose команды
+```
+docker compose ps          # Статус
+docker compose logs -f     # Логи всех сервисов
+docker compose restart     # Перезапуск
+docker compose down -v     # Остановка с удалением томов
+```
+
+Краткий чеклист для развертывания:
+```
+# 1. Установите Docker на Rocky Linux
+# 2. git clone ваш_репозиторий
+# 3. cd dnscloud-go
+# 4. cp .env.example .env и настройте
+# 5. chmod +x setup.sh && ./setup.sh
+# 6. Проверьте: dig @127.0.0.1 google.com
+```
