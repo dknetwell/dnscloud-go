@@ -35,7 +35,7 @@ func main() {
     defer cache.shutdown()
     
     // Инициализация Cloud API клиента
-    apiClient := newCloudAPIClient(cfg.CloudAPI)
+    apiClient := newCloudAPIClient(&cfg.CloudAPI)
     
     // Инициализация движка проверок
     engine := newCheckEngine(cache, apiClient)
