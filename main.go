@@ -8,84 +8,88 @@ import (
     "os/signal"
     "syscall"
     "time"
-
-    "github.com/miekg/dns"
+    
     "github.com/prometheus/client_golang/prometheus/promhttp"
-
-    "dnscloud-go/config"
-    "dnscloud-go/logger"
-    "dnscloud-go/server"
-    "dnscloud-go/checker"
 )
 
 func main() {
     // Загрузка конфигурации
-    if err := config.Load(); err != nil {
-        logger.Fatal("Failed to load config", "error", err)
+    if err := loadConfig(); err != nil {
+        fmt.Printf("❌ Failed to load config: %v\n", err)
+        os.Exit(1)
     }
-
-    cfg := config.Get()
+    
+    cfg := getConfig()
     
     // Инициализация логгера
-    logger.Init(cfg.Logging)
+    initLogger(cfg.LogLevel, cfg.LogFormat)
     
-    logger.Info("🚀 Starting DNS Security Proxy",
+    logInfo("🚀 Starting DNS Security Proxy",
         "version", "1.0.0",
-        "listen_dns", ":5353",
-        "listen_http", ":8054",
-        "sla_timeout", cfg.Timeouts.Total)
-
-    // Создание движка проверок
-    engine := checker.NewEngine()
-    defer engine.Shutdown()
-
-    // Создание DNS сервера
-    dnsServer := server.NewDNSServer(cfg.Server, engine)
+        "dns_listen", cfg.DNSListen,
+        "http_listen", cfg.HTTPListen,
+        "sla_timeout", cfg.Timeouts.Total.String())
     
-    // Создание HTTP сервера для метрик и health
-    httpServer := server.NewHTTPServer(cfg.Server)
-
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-
-    // Запуск серверов
+    // Инициализация метрик
+    initMetrics()
+    
+    // Инициализация кеша
+    cache := newCacheManager()
+    defer cache.shutdown()
+    
+    // Инициализация Cloud API клиента
+    apiClient := newCloudAPIClient(cfg.CloudAPI)
+    
+    // Инициализация движка проверок
+    engine := newCheckEngine(cache, apiClient)
+    
+    // Запуск DNS сервера
+    dnsServer := newDNSServer(cfg.DNSListen, engine)
     go func() {
-        if err := dnsServer.Start(ctx); err != nil {
-            logger.Error("DNS server failed", "error", err)
-            cancel()
+        logInfo("Starting DNS server", "address", cfg.DNSListen)
+        if err := dnsServer.start(); err != nil {
+            logError("DNS server failed", err)
+            os.Exit(1)
         }
     }()
-
+    
+    // Запуск HTTP сервера
+    httpServer := newHTTPServer(cfg.HTTPListen)
     go func() {
-        if err := httpServer.Start(ctx); err != nil {
-            logger.Error("HTTP server failed", "error", err)
-            cancel()
+        logInfo("Starting HTTP server", "address", cfg.HTTPListen)
+        if err := httpServer.start(); err != nil && err != http.ErrServerClosed {
+            logError("HTTP server failed", err)
+            os.Exit(1)
         }
     }()
-
+    
     // Ожидание сигналов завершения
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-    logger.Info("✅ Services started successfully")
-    logger.Info("📊 Metrics: http://localhost:8054/metrics")
-    logger.Info("❤️  Health: http://localhost:8054/health")
-
+    
+    logInfo("✅ Services started successfully")
+    logInfo("📊 Metrics: http://" + cfg.HTTPListen + "/metrics")
+    logInfo("❤️  Health: http://" + cfg.HTTPListen + "/health")
+    
     select {
     case sig := <-sigChan:
-        logger.Info("🛑 Received signal, shutting down", "signal", sig)
-        cancel()
+        logInfo("🛑 Received signal, shutting down", "signal", sig.String())
         
         // Graceful shutdown (30 секунд)
         shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
         defer shutdownCancel()
         
-        dnsServer.Shutdown(shutdownCtx)
-        httpServer.Shutdown(shutdownCtx)
+        if err := dnsServer.shutdown(shutdownCtx); err != nil {
+            logError("DNS server shutdown error", err)
+        }
         
-    case <-ctx.Done():
-        logger.Info("Context cancelled, shutting down")
+        if err := httpServer.shutdown(shutdownCtx); err != nil {
+            logError("HTTP server shutdown error", err)
+        }
+        
+    case <-time.After(1 * time.Hour):
+        logInfo("Timeout reached, shutting down")
     }
-
-    logger.Info("👋 Shutdown completed")
+    
+    logInfo("👋 Shutdown completed")
 }
