@@ -14,7 +14,7 @@ type DomainResult struct {
     ProcessingTime time.Duration `json:"processing_time,omitempty"`
 }
 
-// APIResponse - ответ Cloud API
+// APIResponse - ответ Cloud API (ПЕРЕНЕСЕН СЮДА ИЗ engine.go)
 type APIResponse struct {
     Domain   string `json:"domain"`
     Category int    `json:"category"`
