@@ -14,7 +14,6 @@ type Config struct {
     DNSListen  string        `yaml:"dns_listen"`
     HTTPListen string        `yaml:"http_listen"`
     LogLevel   string        `yaml:"log_level"`
-    LogFormat  string        `yaml:"log_format"`
     Timeouts   TimeoutConfig `yaml:"timeouts"`
     CloudAPI   CloudAPIConfig `yaml:"cloud_api"`
     Cache      CacheConfig   `yaml:"cache"`
@@ -37,10 +36,10 @@ type CloudAPIConfig struct {
 }
 
 type CacheConfig struct {
-    Strategy      string        `yaml:"strategy"`
-    ValkeyAddr    string        `yaml:"valkey_address"`
-    ValkeyPass    string        `yaml:"valkey_password"`
-    MemoryMaxSize int           `yaml:"memory_max_size_mb"`
+    Strategy      string `yaml:"strategy"`
+    ValkeyAddr    string `yaml:"valkey_address"`
+    ValkeyPass    string `yaml:"valkey_password"`
+    MemoryMaxSize int    `yaml:"memory_max_size_mb"`
 }
 
 type SinkholeConfig struct {
@@ -58,6 +57,11 @@ var config *Config
 func loadConfig() error {
     // Загружаем .env если есть
     godotenv.Load()
+    
+    // Проверяем наличие конфига
+    if _, err := os.Stat("config/config.yaml"); os.IsNotExist(err) {
+        return fmt.Errorf("config file not found: config/config.yaml")
+    }
     
     // Читаем конфигурацию YAML
     data, err := os.ReadFile("config/config.yaml")
