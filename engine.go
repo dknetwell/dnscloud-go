@@ -5,6 +5,13 @@ import (
     "time"
 )
 
+// APIResponse - ответ Cloud API
+type APIResponse struct {
+    Domain   string `json:"domain"`
+    Category int    `json:"category"`
+    TTL      int    `json:"ttl"`
+}
+
 // CheckEngine - движок проверок с контролем SLA
 type CheckEngine struct {
     cache     *CacheManager
