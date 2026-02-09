@@ -3,12 +3,13 @@ package main
 import (
     "context"
     "fmt"
-    "net/http"
+    "net"
     "os"
     "os/signal"
     "syscall"
     "time"
     
+    "github.com/miekg/dns"
     "github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -22,7 +23,7 @@ func main() {
     cfg := getConfig()
     
     // Инициализация логгера
-    initLogger(cfg.LogLevel, cfg.LogFormat)
+    initLogger(cfg.LogLevel)
     
     logInfo("🚀 Starting DNS Security Proxy",
         "version", "1.0.0",
@@ -43,7 +44,7 @@ func main() {
     // Инициализация движка проверок
     engine := newCheckEngine(cache, apiClient)
     
-    // Запуск DNS сервера
+    // Запуск DNS сервера (UDP и TCP)
     dnsServer := newDNSServer(cfg.DNSListen, engine)
     go func() {
         logInfo("Starting DNS server", "address", cfg.DNSListen)
@@ -53,13 +54,12 @@ func main() {
         }
     }()
     
-    // Запуск HTTP сервера
-    httpServer := newHTTPServer(cfg.HTTPListen)
+    // Запуск HTTP сервера для метрик
+    httpServer := newHTTPServer(cfg.HTTPListen, engine)
     go func() {
         logInfo("Starting HTTP server", "address", cfg.HTTPListen)
-        if err := httpServer.start(); err != nil && err != http.ErrServerClosed {
+        if err := httpServer.start(); err != nil {
             logError("HTTP server failed", err)
-            os.Exit(1)
         }
     }()
     
@@ -75,20 +75,15 @@ func main() {
     case sig := <-sigChan:
         logInfo("🛑 Received signal, shutting down", "signal", sig.String())
         
-        // Graceful shutdown (30 секунд)
-        shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-        defer shutdownCancel()
+        // Graceful shutdown
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
         
-        if err := dnsServer.shutdown(shutdownCtx); err != nil {
-            logError("DNS server shutdown error", err)
-        }
-        
-        if err := httpServer.shutdown(shutdownCtx); err != nil {
-            logError("HTTP server shutdown error", err)
-        }
+        dnsServer.shutdown(ctx)
+        httpServer.shutdown(ctx)
         
     case <-time.After(1 * time.Hour):
-        logInfo("Timeout reached, shutting down")
+        logInfo("Timeout reached")
     }
     
     logInfo("👋 Shutdown completed")
