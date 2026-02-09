@@ -62,14 +62,17 @@ services:
     networks:
       - dns-net
     healthcheck:
-      test: ["CMD-SHELL", "echo 'ping' | valkey-cli -a $${VALKEY_PASSWORD} --no-auth-warning | grep PONG"]
+      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:-SecurePass123!}", "ping"]
       interval: 10s
-      timeout: 5s
+      timeout: 3s
       retries: 3
 
 networks:
   dns-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
 
 volumes:
   valkey-data:
