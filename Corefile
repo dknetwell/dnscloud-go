@@ -3,7 +3,7 @@
 
 .:53 {
     # ВСЕ запросы форвардим в ваше приложение
-    forward . dns-proxy:5353 {
+    forward . 172.20.0.3:5353 {
         max_concurrent 10000
         expire 30s
         health_check 10s
@@ -11,24 +11,33 @@
         prefer_udp
     }
     
+    # Кеширование
     cache {
         success 10000 3600 300
         denial 10000 3600 300
         prefetch 1000 10m 80%
     }
     
+    # Логирование
     log
+    
+    # Обработка ошибок
     errors
     
+    # Метрики Prometheus
     prometheus :9091
+    
+    # Health check
     health :8080
+    
+    # Безопасность
     bind 0.0.0.0
     bufsize 1232
 }
 
-# DNS-over-TLS (DoT) - отдельный серверный блок
+# DNS-over-TLS (DoT)
 tls://.:853 {
-    forward . dns-proxy:5353 {
+    forward . 172.20.0.3:5353 {
         max_concurrent 10000
         expire 30s
         health_check 10s
@@ -46,9 +55,9 @@ tls://.:853 {
     bind 0.0.0.0
 }
 
-# DNS-over-HTTPS (DoH) - отдельный серверный блок  
+# DNS-over-HTTPS (DoH)
 https://.:443 {
-    forward . dns-proxy:5353 {
+    forward . 172.20.0.3:5353 {
         max_concurrent 10000
         expire 30s
         health_check 10s
