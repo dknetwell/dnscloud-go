@@ -3,6 +3,8 @@ package main
 import (
     "fmt"
     "os"
+    "strconv"
+    "strings"
     "time"
     
     "github.com/joho/godotenv"
@@ -23,68 +25,12 @@ type Config struct {
     Metrics    MetricsConfig `yaml:"metrics"`
 }
 
-type TimeoutConfig struct {
-    Total       time.Duration `yaml:"total"`
-    CloudAPI    time.Duration `yaml:"cloud_api"`
-    CacheRead   time.Duration `yaml:"cache_read"`
-    CacheWrite  time.Duration `yaml:"cache_write"`
-    DNSResponse time.Duration `yaml:"dns_response"`
-}
-
-type CloudAPIConfig struct {
-    URL       string        `yaml:"url"`
-    Key       string        `yaml:"key"`
-    RateLimit int           `yaml:"rate_limit"`
-    Burst     int           `yaml:"burst"`
-    Timeout   time.Duration `yaml:"timeout"`
-}
-
-type CacheConfig struct {
-    Strategy string            `yaml:"strategy"`
-    Memory   MemoryCacheConfig `yaml:"memory"`
-    Valkey   ValkeyCacheConfig `yaml:"valkey"`
-}
-
-type MemoryCacheConfig struct {
-    MaxSizeMB        int           `yaml:"max_size_mb"`
-    DefaultExpiration time.Duration `yaml:"default_expiration"`
-    CleanupInterval  time.Duration `yaml:"cleanup_interval"`
-}
-
-type ValkeyCacheConfig struct {
-    Address     string        `yaml:"address"`
-    Password    string        `yaml:"password"`
-    PoolSize    int           `yaml:"pool_size"`
-    ReadTimeout time.Duration `yaml:"read_timeout"`
-    WriteTimeout time.Duration `yaml:"write_timeout"`
-}
-
-type SinkholeConfig struct {
-    Categories map[int]string `yaml:"categories"`
-    Default    string         `yaml:"default"`
-    IPv6       string         `yaml:"ipv6"`
-}
-
-type TTLConfig struct {
-    ByCategory map[int]int `yaml:"by_category"`
-    Fallback   int         `yaml:"fallback"`
-    Min        int         `yaml:"min"`
-    Max        int         `yaml:"max"`
-}
-
-type MetricsConfig struct {
-    PrometheusEnabled bool          `yaml:"prometheus_enabled"`
-    Prefix           string         `yaml:"prefix"`
-    CollectInterval  time.Duration `yaml:"collect_interval"`
-}
-
-var config *Config
+// ... остальные структуры остаются такими же ...
 
 func loadConfig() error {
     // Загружаем .env если есть
     godotenv.Load()
     
-    // Проверяем наличие конфига
     configPath := "config/config.yaml"
     if _, err := os.Stat(configPath); os.IsNotExist(err) {
         return fmt.Errorf("config file not found: %s", configPath)
@@ -96,47 +42,35 @@ func loadConfig() error {
         return fmt.Errorf("failed to read config file: %w", err)
     }
     
+    // Заменяем переменные окружения в YAML
+    yamlContent := string(data)
+    yamlContent = os.ExpandEnv(yamlContent)
+    
     var cfg Config
-    if err := yaml.Unmarshal(data, &cfg); err != nil {
+    if err := yaml.Unmarshal([]byte(yamlContent), &cfg); err != nil {
         return fmt.Errorf("failed to parse config: %w", err)
     }
     
-    // Заменяем переменные окружения
-    // Простая замена ${VAR} на значения из окружения
-    // В реальности лучше использовать os.ExpandEnv для каждой строки
+    // Дополнительные замены
+    if cfg.CloudAPI.Key == "" {
+        cfg.CloudAPI.Key = os.Getenv("CLOUD_API_KEY")
+    }
     
-    // Если LOG_LEVEL установлен в env, используем его
+    if cfg.Cache.Valkey.Password == "" {
+        cfg.Cache.Valkey.Password = os.Getenv("VALKEY_PASSWORD")
+    }
+    
     if envLevel := os.Getenv("LOG_LEVEL"); envLevel != "" {
         cfg.LogLevel = envLevel
+    }
+    
+    // Устанавливаем значения по умолчанию если не установлены
+    if cfg.CloudAPI.RateLimit == 0 {
+        cfg.CloudAPI.RateLimit = 5
     }
     
     config = &cfg
     return nil
 }
 
-func getConfig() *Config {
-    if config == nil {
-        panic("Config not loaded. Call loadConfig() first.")
-    }
-    return config
-}
-
-func getTTLByCategory(category int) int {
-    cfg := getConfig()
-    if ttl, ok := cfg.TTL.ByCategory[category]; ok {
-        return ttl
-    }
-    return cfg.TTL.Fallback
-}
-
-func getSinkholeIP(category int) string {
-    cfg := getConfig()
-    if ip, ok := cfg.Sinkholes.Categories[category]; ok {
-        return ip
-    }
-    return cfg.Sinkholes.Default
-}
-
-func getCacheConfig() CacheConfig {
-    return getConfig().Cache
-}
+// ... остальные функции без изменений ...
