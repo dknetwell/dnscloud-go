@@ -1,0 +1,46 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+dns-proxy
+
+# Dependencies
+vendor/
+go/pkg/
+
+# Environment
+.env
+.env.local
+
+# Certificates
+certs/*.key
+certs/*.crt
+certs/*.pem
+
+# Logs
+*.log
+logs/
+*.pid
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Backups
+*.tar.gz
+backup-*
+
+# Data
+data/blocklists/*.txt
+
+# OS
+.DS_Store
+Thumbs.db
