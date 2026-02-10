@@ -102,22 +102,17 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         "type", dns.TypeToString[q.Qtype],
         "protocol", w.RemoteAddr().Network())
 
-    // КОНТЕКСТ ДЛЯ КЛИЕНТА - SLA 100ms
+    // КОНТЕКСТ ДЛЯ КЛИЕНТА - SLA 100ms (будет отменен после ответа)
     clientCtx, clientCancel := context.WithTimeout(context.Background(), getConfig().Timeouts.Total)
-    defer clientCancel()
-
-    // Контекст для Cloud API (дольше, 2 секунды)
-    apiCtx, apiCancel := context.WithTimeout(context.Background(), 2*time.Second)
-    defer apiCancel()
+    defer clientCancel() // Отменяем только клиентский контекст
 
     // Каналы для параллельного выполнения
     cacheResultChan := make(chan *DomainResult, 1)
     realIPChan := make(chan string, 1)
-    apiResultChan := make(chan *DomainResult, 1)
 
     // 1. Проверка кеша (самый быстрый путь)
     go func() {
-        if cached := s.engine.Cache.get(domain); cached != nil {  // Используем s.engine.Cache
+        if cached := s.engine.Cache.get(domain); cached != nil {
             cached.Source = "cache"
             cacheResultChan <- cached
         }
@@ -134,14 +129,17 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         }
     }()
 
-    // 3. Запуск проверки Cloud API в фоне (для обогащения кеша)
+    // 3. Запуск проверки Cloud API в фоне с ОТДЕЛЬНЫМ контекстом
+    // Этот контекст не будет отменен после ответа клиенту
     go func() {
-        // Используем отдельный контекст с таймаутом 2 секунды
+        // Создаем отдельный контекст с таймаутом 2 секунды
+        apiCtx, apiCancel := context.WithTimeout(context.Background(), 2*time.Second)
+        defer apiCancel() // Будет отменен только когда горутина завершится
+
         result, err := s.engine.checkDomainForCache(apiCtx, domain)
         if err != nil {
             logDebug("Background API check failed", "domain", domain, "error", err)
         } else {
-            apiResultChan <- result
             logDebug("Background API check completed", "domain", domain, "category", result.Category)
         }
     }()
@@ -221,16 +219,9 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         "action", action,
         "ip", responseIP,
         "duration_ms", duration.Milliseconds())
-
-    // В фоне продолжаем ждать API результат для кеша
-    go func() {
-        select {
-        case apiResult := <-apiResultChan:
-            logDebug("Enriching cache with API result", "domain", domain, "category", apiResult.Category)
-        case <-time.After(2 * time.Second):
-            // Таймаут фоновой проверки
-        }
-    }()
+    
+    // Фоновая проверка Cloud API продолжает работать в своей горутине
+    // с независимым контекстом
 }
 
 func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, error) {
@@ -242,6 +233,7 @@ func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, e
             d := net.Dialer{
                 Timeout: 50 * time.Millisecond,
             }
+            // Используем несколько публичных DNS для надежности
             dnsServers := []string{"8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53"}
             for _, server := range dnsServers {
                 conn, err := d.DialContext(ctx, network, server)
