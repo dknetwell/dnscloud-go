@@ -84,7 +84,7 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
     m.SetReply(r)
     m.Compress = true
     m.Authoritative = true
-    m.Rcode = dns.RcodeSuccess // По умолчанию успех
+    m.Rcode = dns.RcodeSuccess
 
     if len(r.Question) == 0 {
         m.Rcode = dns.RcodeFormatError
@@ -101,81 +101,88 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         "type", dns.TypeToString[q.Qtype],
         "protocol", w.RemoteAddr().Network())
 
-    // Проверяем домен параллельно с получением реального IP
-    ctx, cancel := context.WithTimeout(context.Background(), getConfig().Timeouts.Total)
-    defer cancel()
+    // КОНТЕКСТ ДЛЯ КЛИЕНТА - SLA 100ms
+    clientCtx, clientCancel := context.WithTimeout(context.Background(), getConfig().Timeouts.Total)
+    defer clientCancel()
+
+    // Контекст для Cloud API (дольше, 2 секунды)
+    apiCtx, apiCancel := context.WithTimeout(context.Background(), 2*time.Second)
+    defer apiCancel()
 
     // Каналы для параллельного выполнения
-    checkResultChan := make(chan *DomainResult, 1)
+    cacheResultChan := make(chan *DomainResult, 1)
     realIPChan := make(chan string, 1)
-    errorChan := make(chan error, 2)
+    apiResultChan := make(chan *DomainResult, 1)
 
-    // 1. Проверка категории домена (параллельно)
+    // 1. Проверка кеша (самый быстрый путь)
     go func() {
-        result, err := s.engine.checkDomain(ctx, domain)
-        if err != nil {
-            errorChan <- err
-            return
+        if cached := s.engine.cache.get(domain); cached != nil {
+            cached.Source = "cache"
+            cacheResultChan <- cached
         }
-        checkResultChan <- result
     }()
 
     // 2. Получение реального IP из публичного DNS (параллельно)
     go func() {
-        ip, err := s.resolveRealIP(ctx, domain)
+        ip, err := s.resolveRealIP(clientCtx, domain)
         if err != nil {
-            errorChan <- err
-            return
+            logWarn("Failed to resolve real IP", "domain", domain, "error", err)
+            realIPChan <- "8.8.8.8" // Fallback
+        } else {
+            realIPChan <- ip
         }
-        realIPChan <- ip
     }()
 
-    // Ждем результаты
-    var checkResult *DomainResult
-    var action string
+    // 3. Запуск проверки Cloud API в фоне (для обогащения кеша)
+    // Этот запрос продолжается даже после ответа клиенту
+    go func() {
+        // Используем отдельный контекст с таймаутом 2 секунды
+        result, err := s.engine.checkDomainForCache(apiCtx, domain)
+        if err != nil {
+            logDebug("Background API check failed", "domain", domain, "error", err)
+        } else {
+            apiResultChan <- result
+            logDebug("Background API check completed", "domain", domain, "category", result.Category)
+        }
+    }()
+
+    // Ждем результаты в рамках SLA клиента (100ms)
     var responseIP string
+    var ttl uint32 = 300
+    var action = "allow" // По умолчанию разрешаем
 
     select {
-    case result := <-checkResultChan:
-        checkResult = result
-        action = result.Action
-        
-        // Если домен разрешен - получаем реальный IP
-        if result.Action == "allow" {
+    case cached := <-cacheResultChan:
+        // Есть в кеше - используем результат
+        logDebug("Cache hit", "domain", domain)
+        if cached.Action == "block" {
+            action = "block"
+            responseIP = cached.IP
+        } else {
+            // Ждем реальный IP
             select {
             case ip := <-realIPChan:
                 responseIP = ip
-            case <-time.After(50 * time.Millisecond):
-                // Если не успели получить IP - используем fallback
-                logWarn("Real IP resolution timeout", "domain", domain)
-                responseIP = "8.8.8.8" // Fallback IP
+            case <-clientCtx.Done():
+                responseIP = "8.8.8.8"
             }
-        } else {
-            // Если домен заблокирован - используем sinkhole IP
-            responseIP = result.IP
         }
-        
+        ttl = uint32(cached.TTL)
+
     case ip := <-realIPChan:
-        // Если проверка категории не успела - разрешаем домен
-        action = "allow"
+        // Получили реальный IP, кеша нет
+        logDebug("Cache miss, using real IP", "domain", domain)
         responseIP = ip
-        
-    case <-ctx.Done():
-        // SLA превышен - разрешаем домен с fallback IP
-        logWarn("SLA timeout in DNS handler", "domain", domain)
-        action = "allow"
+        // Разрешаем домен (ждем API для кеша в фоне)
+
+    case <-clientCtx.Done():
+        // SLA превышен - отдаем fallback
+        logWarn("Client SLA timeout", "domain", domain, "timeout", getConfig().Timeouts.Total)
         responseIP = "8.8.8.8"
+        action = "allow"
     }
 
-    // Если checkResult nil (не успели получить), создаем fallback
-    if checkResult == nil {
-        checkResult = &DomainResult{
-            Category: 0,
-            TTL:      getTTLByCategory(0),
-        }
-    }
-
-    // Формируем ответ в зависимости от типа запроса
+    // Формируем ответ
     switch q.Qtype {
     case dns.TypeA:
         rr := &dns.A{
@@ -183,7 +190,7 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
                 Name:   q.Name,
                 Rrtype: dns.TypeA,
                 Class:  dns.ClassINET,
-                Ttl:    uint32(checkResult.TTL),
+                Ttl:    ttl,
             },
             A: net.ParseIP(responseIP).To4(),
         }
@@ -195,67 +202,73 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
                 Name:   q.Name,
                 Rrtype: dns.TypeAAAA,
                 Class:  dns.ClassINET,
-                Ttl:    uint32(checkResult.TTL),
+                Ttl:    ttl,
             },
-            AAAA: net.ParseIP("::1"), // IPv6 sinkhole
+            AAAA: net.ParseIP("::1"),
         }
         m.Answer = append(m.Answer, rr)
-
-    default:
-        // Для других типов запросов возвращаем NOERROR без ответа
-        m.Rcode = dns.RcodeSuccess
     }
 
-    // Отправляем ответ
+    // Отправляем ответ клиенту (в рамках SLA)
     if err := w.WriteMsg(m); err != nil {
         logError("Failed to write DNS response", err)
     }
 
     duration := time.Since(start)
-    logDebug("DNS response",
+    logDebug("DNS response sent",
         "client", w.RemoteAddr().String(),
         "domain", domain,
         "action", action,
         "ip", responseIP,
         "duration_ms", duration.Milliseconds())
+
+    // В фоне продолжаем ждать API результат для кеша (если еще не было)
+    go func() {
+        select {
+        case apiResult := <-apiResultChan:
+            // Обогащаем кеш результатом API
+            logDebug("Enriching cache with API result", "domain", domain, "category", apiResult.Category)
+        case <-time.After(2 * time.Second):
+            // Таймаут фоновой проверки
+        }
+    }()
 }
 
-// resolveRealIP - получение реального IP из публичного DNS
 func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, error) {
-    // Очищаем точку в конце
-    cleanDomain := domain
-    if len(cleanDomain) > 0 && cleanDomain[len(cleanDomain)-1] == '.' {
-        cleanDomain = cleanDomain[:len(cleanDomain)-1]
-    }
+    cleanDomain := strings.TrimSuffix(domain, ".")
 
-    // Используем системные резолверы с таймаутом
     resolver := &net.Resolver{
         PreferGo: true,
         Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
             d := net.Dialer{
                 Timeout: 50 * time.Millisecond,
             }
-            // Используем публичные DNS серверы
-            return d.DialContext(ctx, network, "8.8.8.8:53")
+            // Используем несколько публичных DNS для надежности
+            dnsServers := []string{"8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53"}
+            for _, server := range dnsServers {
+                conn, err := d.DialContext(ctx, network, server)
+                if err == nil {
+                    return conn, nil
+                }
+            }
+            return nil, fmt.Errorf("all DNS servers failed")
         },
     }
 
-    // Разрешаем домен
-    addrs, err := resolver.LookupHost(ctx, cleanDomain)
+    // Таймаут на разрешение DNS
+    resolveCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
+    defer cancel()
+
+    addrs, err := resolver.LookupHost(resolveCtx, cleanDomain)
     if err != nil {
         return "", err
     }
 
-    if len(addrs) == 0 {
-        return "", fmt.Errorf("no IP found for domain %s", cleanDomain)
-    }
-
-    // Возвращаем первый IPv4 адрес
     for _, addr := range addrs {
         if ip := net.ParseIP(addr); ip != nil && ip.To4() != nil {
             return addr, nil
         }
     }
 
-    return "", fmt.Errorf("no IPv4 address found for domain %s", cleanDomain)
+    return "", fmt.Errorf("no IPv4 address found")
 }
