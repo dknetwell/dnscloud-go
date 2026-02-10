@@ -7,26 +7,25 @@ import (
 
 // CheckEngine - движок проверок
 type CheckEngine struct {
-    Cache     *CacheManager
+    Cache     *CacheManager  // Публичное поле с заглавной буквы
     apiClient *CloudAPIClient
     metrics   *MetricsCollector
 }
 
 func newCheckEngine(cache *CacheManager, apiClient *CloudAPIClient) *CheckEngine {
     return &CheckEngine{
-        Cache:     cache,
+        Cache:     cache,      // Используем заглавную букву
         apiClient: apiClient,
         metrics:   newMetricsCollector(),
     }
 }
 
 // checkDomainForCache - проверка домена только для обогащения кеша
-// Используется в фоне после ответа клиенту
 func (e *CheckEngine) checkDomainForCache(ctx context.Context, domain string) (*DomainResult, error) {
     start := time.Now()
 
     // Пробуем кеш
-    if cached := e.cache.get(domain); cached != nil {
+    if cached := e.Cache.get(domain); cached != nil {  // Используем e.Cache
         return cached, nil
     }
 
@@ -44,7 +43,7 @@ func (e *CheckEngine) checkDomainForCache(ctx context.Context, domain string) (*
     result := e.createResultFromAPI(apiResult)
 
     // Сохраняем в кеш
-    e.cache.set(domain, result)
+    e.Cache.set(domain, result)  // Используем e.Cache
 
     logDebug("Background API check completed",
         "domain", domain,
@@ -57,7 +56,7 @@ func (e *CheckEngine) checkDomainForCache(ctx context.Context, domain string) (*
 // checkDomain - основная проверка (используется если есть в кеше)
 func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainResult, error) {
     // В основном только проверяем кеш
-    if cached := e.cache.get(domain); cached != nil {
+    if cached := e.Cache.get(domain); cached != nil {  // Используем e.Cache
         e.metrics.incCacheHit()
         return cached, nil
     }
@@ -65,7 +64,6 @@ func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainRe
     e.metrics.incCacheMiss()
     
     // Если нет в кеше, возвращаем разрешенный результат
-    // Cloud API будет проверен в фоне
     return &DomainResult{
         Domain:   domain,
         Action:   "allow",
