@@ -13,9 +13,8 @@ RUN go mod download
 # Копируем исходный код
 COPY *.go ./
 
-# Проверяем зависимости и собираем приложение
-RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build -o dns-proxy .
+# Собираем приложение
+RUN CGO_ENABLED=0 GOOS=linux go build -o dns-proxy .
 
 # Финальный образ
 FROM alpine:3.18
