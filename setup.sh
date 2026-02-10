@@ -32,7 +32,7 @@ CLOUD_API_KEY=your_api_key_here
 # Опциональные
 VALKEY_PASSWORD=SecurePass123!
 CLOUD_API_URL=https://172.16.10.33/api/
-LOG_LEVEL=info
+LOG_LEVEL=debug
 RATE_LIMIT_RPS=5
 EOF
     fi
@@ -65,6 +65,7 @@ if [ -f go.mod ]; then
     if command -v go &> /dev/null; then
         echo "  Running go mod tidy..."
         go mod tidy 2>&1 | grep -v "warning: " || true
+        echo "  ✅ Dependencies updated"
     else
         echo "  ⚠️  Go not installed, skipping go mod tidy"
     fi
@@ -80,27 +81,10 @@ fi
 
 chmod 644 certs/* 2>/dev/null || true
 
-# Тестируем доступность Cloud API
-echo "🌐 Testing Cloud API connectivity..."
-if ping -c 1 -W 2 172.16.10.33 &>/dev/null; then
-    echo "  ✅ Cloud API host is reachable"
-    
-    # Проверяем с curl
-    if command -v curl &>/dev/null; then
-        echo -n "  Testing API with curl: "
-        if timeout 5 curl -k -s -H "X-PAN-KEY: $CLOUD_API_KEY" "https://172.16.10.33/api/?type=op&cmd=<test><dns-proxy><dns-signature><fqdn>example.com</fqdn></dns-signature></dns-proxy></test>" &>/dev/null; then
-            echo "✅ OK"
-        else
-            echo "⚠️  Failed (might be timeout or authentication)"
-        fi
-    fi
-else
-    echo "  ⚠️  Cloud API host is NOT reachable"
-fi
-
 echo "🐳 Building and starting containers..."
 docker compose down 2>/dev/null || true
-docker compose up -d --build
+docker compose build --no-cache
+docker compose up -d
 
 echo ""
 echo "⏳ Waiting for services to start (60 seconds)..."
@@ -122,42 +106,19 @@ else
     echo "  ⚠️  DNS Proxy health: FAILED"
 fi
 
-# Проверка CoreDNS
-echo "Testing CoreDNS health..."
-if timeout 10 curl -s http://localhost:8080/health 2>/dev/null; then
-    echo "  ✅ CoreDNS health: OK (responding)"
-else
-    echo "  ⚠️  CoreDNS health: FAILED or not responding"
-fi
-
-# Проверка Valkey
-echo "Testing Valkey connection..."
-if docker compose ps valkey 2>/dev/null | grep -q "healthy"; then
-    echo "  ✅ Valkey: Healthy"
-else
-    echo "  ⚠️  Valkey: Not healthy"
-fi
-
 echo ""
 echo "🧪 Testing DNS..."
 if command -v dig &> /dev/null; then
     echo "Testing DNS with dig..."
 
-    # Проверяем что DNS Proxy слушает
-    if docker compose exec -T dns-proxy netstat -tln 2>/dev/null | grep -q ":5353"; then
-        echo "  ✅ DNS Proxy listening on 5353"
-    else
-        echo "  ❌ DNS Proxy NOT listening on 5353"
-    fi
-
     # Тестируем DNS запросы
-    for test_domain in "yandex.ru" "google.com" "example.com"; do
+    for test_domain in "yandex.ru" "google.com" "example.com" "malware.com"; do
         echo -n "  DNS query $test_domain: "
-        if result=$(timeout 10 dig @127.0.0.1 $test_domain +short 2>&1); then
+        if result=$(timeout 5 dig @127.0.0.1 $test_domain +short 2>&1); then
             if echo "$result" | grep -q -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
-                echo "✅ Got IP"
+                echo "✅ Got IP: $result"
             else
-                echo "⚠️  No IP (might be NXDOMAIN)"
+                echo "⚠️  No IP found (response: $result)"
             fi
         else
             echo "❌ No response"
@@ -179,12 +140,9 @@ echo "    CoreDNS: http://localhost:8080/health"
 echo "    DNS Proxy: http://localhost:8054/health"
 echo ""
 echo "🔍 Debug commands:"
-echo "  Check Cloud API from container:"
-echo "    docker exec dns-proxy wget --no-check-certificate --header=\"X-PAN-KEY: \$CLOUD_API_KEY\" -O - \"https://172.16.10.33/api/?type=op&cmd=<test><dns-proxy><dns-signature><fqdn>yandex.ru</fqdn></dns-signature></dns-proxy></test>\""
-echo ""
-echo "📊 Monitoring:"
-echo "  docker compose logs -f"
-echo "  docker network inspect dnscloud-go_dns-net"
+echo "  Check logs: docker compose logs -f dns-proxy"
+echo "  Test DNS: dig @127.0.0.1 google.com +short"
+echo "  Check cache: docker exec dns-proxy wget -q -O- http://localhost:8054/stats"
 echo ""
 echo "⏹️  To stop: docker compose down"
 echo "========================================"
