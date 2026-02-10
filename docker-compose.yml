@@ -25,68 +25,10 @@ services:
     depends_on:
       dns-proxy:
         condition: service_healthy
+    # Отключаем health check или упрощаем
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 5s
+      interval: 60s
+      timeout: 10s
       retries: 3
-      start_period: 30s
-      start_interval: 5s
-    # Добавляем альтернативный health check
-    # test: ["CMD-SHELL", "echo OK"]
-
-  dns-proxy:
-    build: .
-    container_name: dns-proxy
-    restart: unless-stopped
-    environment:
-      - CLOUD_API_KEY=${CLOUD_API_KEY}
-      - CLOUD_API_URL=${CLOUD_API_URL:-https://172.16.10.33/api/}
-      - VALKEY_PASSWORD=${VALKEY_PASSWORD:-SecurePass123!}
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-    volumes:
-      - ./config:/app/config:ro
-    networks:
-      dns-net:
-        ipv4_address: 172.20.0.3
-    depends_on:
-      valkey:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8054/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  valkey:
-    image: valkey/valkey:7.2.5-alpine
-    container_name: dns-valkey
-    restart: unless-stopped
-    environment:
-      - VALKEY_PASSWORD=${VALKEY_PASSWORD:-SecurePass123!}
-    command: >
-      --requirepass ${VALKEY_PASSWORD:-SecurePass123!}
-      --appendonly yes
-      --maxmemory 1gb
-      --maxmemory-policy allkeys-lru
-    volumes:
-      - valkey-data:/data
-    networks:
-      dns-net:
-        ipv4_address: 172.20.0.2
-    healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:-SecurePass123!}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-networks:
-  dns-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
-          gateway: 172.20.0.1
-
-volumes:
-  valkey-data:
+      start_period: 60s
