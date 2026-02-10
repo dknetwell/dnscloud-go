@@ -7,8 +7,8 @@ echo "========================================"
 echo "CoreDNS 1.14.1 + Go DNS Proxy"
 echo ""
 
-# Устанавливаем обработчик прерывания для Ctrl+C
-trap 'echo ""; echo "🛑 Script interrupted by user"; docker compose down 2>/dev/null || true; exit 1' INT TERM
+# Устанавливаем обработчик прерывания
+trap 'echo ""; echo "🛑 Script interrupted by user"; exit 1' INT TERM
 
 # Проверка Docker
 if ! command -v docker &> /dev/null; then
@@ -56,156 +56,26 @@ fi
 # Проверяем наличие config.yaml
 if [ ! -f config/config.yaml ]; then
     echo "❌ ERROR: config/config.yaml not found!"
-    echo "   Please create it with proper configuration"
     exit 1
 fi
 
-# Убеждаемся что listen адреса правильные в config.yaml
-echo "🔧 Validating config.yaml..."
-if grep -q 'dns_listen: ":5353"' config/config.yaml; then
-    echo "  Fixing dns_listen address..."
-    sed -i 's/dns_listen: ":5353"/dns_listen: "0.0.0.0:5353"/' config/config.yaml
-fi
-
-if grep -q 'http_listen: ":8054"' config/config.yaml; then
-    echo "  Fixing http_listen address..."
-    sed -i 's/http_listen: ":8054"/http_listen: "0.0.0.0:8054"/' config/config.yaml
-fi
-
-# Создаем сертификаты с правильными правами
-echo "🔐 Setting up TLS certificates..."
-if [ ! -f certs/server.crt ] || [ ! -f certs/server.key ]; then
-    echo "  Generating self-signed certificates..."
+# Создаем сертификаты если нет
+if [ ! -f certs/server.crt ]; then
+    echo "🔐 Generating self-signed certificates..."
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout certs/server.key -out certs/server.crt \
-        -days 365 -subj "/CN=dns.localhost" 2>/dev/null || \
-    echo "  ⚠️  Could not generate certificates, continuing..."
+        -days 365 -subj "/CN=dns.localhost" 2>/dev/null || true
 fi
 
-# Исправляем права доступа к сертификатам
 chmod 644 certs/* 2>/dev/null || true
-
-# Создаем правильный Corefile с фиксированным IP
-echo "📝 Creating Corefile with fixed IP..."
-cat > Corefile << 'EOF'
-.:53 {
-    # ВСЕ запросы форвардим в DNS Proxy
-    forward . dns-proxy:5353 {
-        max_concurrent 10000
-        expire 30s
-        health_check 10s
-        policy sequential
-        prefer_udp
-    }
-    
-    cache {
-        success 10000 3600 300
-        denial 10000 3600 300
-        prefetch 1000 10m 80%
-    }
-    
-    log
-    
-    errors
-    
-    prometheus :9091
-    health :8080
-    bind 0.0.0.0
-    bufsize 1232
-}
-
-tls://.:853 {
-    forward . dns-proxy:5353 {
-        max_concurrent 10000
-        expire 30s
-        health_check 10s
-    }
-    
-    cache {
-        success 10000 3600 300
-        denial 10000 3600 300
-    }
-    
-    tls /certs/server.crt /certs/server.key
-    log
-    errors
-    prometheus :9091
-    bind 0.0.0.0
-}
-
-https://.:443 {
-    forward . dns-proxy:5353 {
-        max_concurrent 10000
-        expire 30s
-        health_check 10s
-    }
-    
-    cache {
-        success 10000 3600 300
-        denial 10000 3600 300
-    }
-    
-    tls /certs/server.crt /certs/server.key
-    log
-    errors
-    prometheus :9091
-    bind 0.0.0.0
-}
-EOF
-
-# Убираем version из docker-compose.yml если есть
-if [ -f docker-compose.yml ] && grep -q "^version:" docker-compose.yml; then
-    echo "📝 Removing version from docker-compose.yml..."
-    sed -i '/^version:/d' docker-compose.yml
-fi
-
-# Обновляем Go зависимости
-echo "🔄 Updating Go dependencies..."
-rm -f go.sum 2>/dev/null || true
-if command -v go &> /dev/null; then
-    go mod tidy 2>/dev/null || echo "⚠️  go mod tidy had warnings"
-else
-    echo "⚠️  Go not installed, skipping dependency update"
-fi
-
-# Исправляем common errors в Go коде
-echo "🔧 Fixing compilation errors..."
-if [ -f cache.go ]; then
-    # Исправляем SetEx → Set
-    sed -i 's/\.SetEx(/\.Set(/g' cache.go 2>/dev/null || true
-    echo "  ✅ Fixed redis.SetEx method"
-fi
-
-if [ -f cloud_api.go ]; then
-    # Исправляем указатель
-    if grep -q "func newCloudAPIClient(config CloudAPIConfig)" cloud_api.go; then
-        sed -i 's/func newCloudAPIClient(config CloudAPIConfig) \*CloudAPIClient/func newCloudAPIClient(config \*CloudAPIConfig) \*CloudAPIClient/g' cloud_api.go
-        echo "  ✅ Fixed cloud_api.go pointer"
-    fi
-fi
 
 echo "🐳 Building and starting containers..."
 docker compose down 2>/dev/null || true
-
-# Даем сети время очиститься
-sleep 2
-
-# Сначала запускаем сеть и базовые сервисы
-echo "  Creating network and base services..."
-docker compose up -d --build valkey
-sleep 5
-
-echo "  Starting DNS Proxy..."
-docker compose up -d --build dns-proxy
-sleep 10
-
-echo "  Starting CoreDNS..."
-docker compose up -d --build coredns
-sleep 15
+docker compose up -d --build
 
 echo ""
-echo "⏳ Waiting for all services to stabilize (20 seconds)..."
-sleep 20
+echo "⏳ Waiting for services to start (40 seconds)..."
+sleep 40
 
 echo ""
 echo "✅ Services Status:"
@@ -215,74 +85,53 @@ echo ""
 echo "🧪 Testing services..."
 echo ""
 
-# Проверка DNS Proxy health (внутри контейнера)
+# Проверка DNS Proxy
 echo "Testing DNS Proxy health..."
 if docker compose exec -T dns-proxy wget -q -O- http://localhost:8054/health 2>/dev/null | grep -q "healthy"; then
-    echo "  ✅ DNS Proxy health: OK (internal)"
+    echo "  ✅ DNS Proxy health: OK"
 else
-    echo "  ⚠️  DNS Proxy health: FAILED (internal)"
-    echo "  Checking logs..."
-    docker compose logs dns-proxy --tail=5 2>/dev/null | tail -5 || true
+    echo "  ⚠️  DNS Proxy health: FAILED"
 fi
 
 # Проверка CoreDNS
 echo "Testing CoreDNS health..."
-if timeout 10 curl -s -f http://localhost:8080/health 2>/dev/null | grep -q "OK"; then
+if timeout 10 curl -s http://localhost:8080/health 2>/dev/null | grep -q "OK"; then
     echo "  ✅ CoreDNS health: OK"
 else
     echo "  ⚠️  CoreDNS health: FAILED"
-    echo "  CoreDNS logs:"
-    docker compose logs coredns --tail=3 2>/dev/null || true
 fi
 
 # Проверка Valkey
 echo "Testing Valkey connection..."
 if docker compose ps valkey 2>/dev/null | grep -q "healthy"; then
-    echo "  ✅ Valkey: Container is healthy"
+    echo "  ✅ Valkey: Healthy"
 else
-    echo "  ⚠️  Valkey: Container not healthy"
+    echo "  ⚠️  Valkey: Not healthy"
 fi
 
 echo ""
-echo "🧪 Testing DNS service..."
+echo "🧪 Testing DNS..."
 if command -v dig &> /dev/null; then
-    echo "Testing with dig..."
+    echo "Testing DNS with dig..."
     
-    # Даем еще время
-    sleep 10
-    
-    # Проверяем что DNS Proxy слушает порт
-    echo "  Checking DNS Proxy port..."
+    # Проверяем что DNS Proxy слушает
     if docker compose exec -T dns-proxy netstat -tln 2>/dev/null | grep -q ":5353"; then
-        echo "    ✅ DNS Proxy listening on 5353"
+        echo "  ✅ DNS Proxy listening on 5353"
     else
-        echo "    ❌ DNS Proxy NOT listening on 5353"
+        echo "  ❌ DNS Proxy NOT listening on 5353"
     fi
     
-    # Тест DNS через CoreDNS
-    echo -n "  DNS via CoreDNS (UDP): "
-    if UDP_OUTPUT=$(timeout 10 dig @127.0.0.1 example.com +short 2>&1); then
-        if echo "$UDP_OUTPUT" | head -1 | grep -q -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^[a-f0-9:]+$"; then
-            echo "✅ Got IP response"
+    # Тестируем DNS
+    echo -n "  DNS query: "
+    if result=$(timeout 10 dig @127.0.0.1 example.com +short 2>&1); then
+        if echo "$result" | grep -q -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+            echo "✅ Got response"
         else
-            echo "⚠️  Response: $(echo "$UDP_OUTPUT" | head -1)"
+            echo "⚠️  Got: $(echo "$result" | head -1)"
         fi
     else
-        echo "❌ Timeout or connection refused"
+        echo "❌ No response"
     fi
-    
-    echo -n "  DNS via CoreDNS (TCP): "
-    if TCP_OUTPUT=$(timeout 10 dig @127.0.0.1 example.com +short +tcp 2>&1); then
-        if echo "$TCP_OUTPUT" | head -1 | grep -q -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$|^[a-f0-9:]+$"; then
-            echo "✅ Got IP response"
-        else
-            echo "⚠️  Response: $(echo "$TCP_OUTPUT" | head -1)"
-        fi
-    else
-        echo "❌ Timeout or connection refused"
-    fi
-else
-    echo "  ℹ️  dig not installed, skipping DNS tests"
 fi
 
 echo ""
@@ -290,13 +139,18 @@ echo "========================================"
 echo "🚀 Setup completed!"
 echo "========================================"
 echo ""
-echo "🔧 Debug information:"
-docker compose exec dns-proxy netstat -tln 2>/dev/null || true
+echo "🌐 Services:"
+echo "  DNS (UDP/TCP): 127.0.0.1:53"
+echo "  DoT: tls://127.0.0.1:853"
+echo "  DoH: https://127.0.0.1/dns-query"
+echo "  Health checks:"
+echo "    CoreDNS: http://localhost:8080/health"
+echo "    DNS Proxy: http://localhost:8054/health"
 echo ""
-echo "📊 For troubleshooting:"
-echo "  1. Check network: docker network inspect dnscloud-go_dns-net"
-echo "  2. Check DNS resolution: docker compose exec coredns ping dns-proxy"
-echo "  3. Check ports: docker compose port dns-proxy 5353"
+echo "🔧 Debug commands:"
+echo "  docker compose logs -f"
+echo "  docker network inspect dnscloud-go_dns-net"
+echo "  docker compose exec coredns nslookup dns-proxy"
 echo ""
 echo "⏹️  To stop: docker compose down"
 echo "========================================"
