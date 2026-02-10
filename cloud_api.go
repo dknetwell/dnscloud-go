@@ -114,11 +114,9 @@ type XMLResponse struct {
 }
 
 type DNSResult struct {
-    DNSSignature struct {
-        Fqdn     string `json:"fqdn"`
-        Category int    `json:"category"`
-        TTL      int    `json:"ttl"`
-    } `json:"dns-signature"`
+    Fqdn     string `json:"fqdn"`
+    Category int    `json:"category"`
+    TTL      int    `json:"ttl"`
 }
 
 func parseXMLResponse(body []byte) (*APIResponse, error) {
