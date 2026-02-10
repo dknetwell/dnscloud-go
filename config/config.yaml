@@ -14,7 +14,7 @@ timeouts:
 
 cloud_api:
   url: "https://172.16.10.33/api/"
-  key: "${CLOUD_API_KEY}"
+  key: "${CLOUD_API_KEY}"  # Это будет X-PAN-KEY
   rate_limit: 5
   burst: 2
   timeout: 50ms
