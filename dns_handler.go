@@ -227,19 +227,35 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, error) {
     cleanDomain := strings.TrimSuffix(domain, ".")
 
+    // Используем стандартный резолвер с несколькими DNS серверами
     resolver := &net.Resolver{
         PreferGo: true,
         Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
             d := net.Dialer{
                 Timeout: 50 * time.Millisecond,
             }
-            // Используем несколько публичных DNS для надежности
-            dnsServers := []string{"8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53"}
+            // Список публичных DNS серверов
+            dnsServers := []string{
+                "8.8.8.8:53",      // Google Primary
+                "8.8.4.4:53",      // Google Secondary
+                "1.1.1.1:53",      // Cloudflare Primary
+                "1.0.0.1:53",      // Cloudflare Secondary
+                "9.9.9.9:53",      // Quad9 Primary
+                "149.112.112.112:53", // Quad9 Secondary
+                "208.67.222.222:53", // OpenDNS Primary
+                "208.67.220.220:53", // OpenDNS Secondary
+                "64.6.64.6:53",    // Verisign Primary
+                "64.6.65.6:53",    // Verisign Secondary
+            }
+            
+            // Пробуем каждый сервер по порядку
             for _, server := range dnsServers {
                 conn, err := d.DialContext(ctx, network, server)
                 if err == nil {
+                    logDebug("DNS server connected", "server", server)
                     return conn, nil
                 }
+                logDebug("DNS server failed", "server", server, "error", err)
             }
             return nil, fmt.Errorf("all DNS servers failed")
         },
@@ -248,16 +264,49 @@ func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, e
     resolveCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
     defer cancel()
 
+    logDebug("Resolving domain", "domain", cleanDomain)
+    
+    // Сначала пробуем резолвинг с PreferGo
     addrs, err := resolver.LookupHost(resolveCtx, cleanDomain)
     if err != nil {
-        return "", err
+        // Если не получилось с PreferGo, пробуем стандартный резолвер
+        logDebug("PreferGo resolver failed, trying system resolver", 
+            "domain", cleanDomain, "error", err)
+        
+        // Используем стандартный резолвер с таймаутом
+        stdCtx, stdCancel := context.WithTimeout(ctx, 80*time.Millisecond)
+        defer stdCancel()
+        
+        addrs, err = net.DefaultResolver.LookupHost(stdCtx, cleanDomain)
+        if err != nil {
+            // Последняя попытка - используем net.LookupHost
+            logDebug("Default resolver failed, trying net.LookupHost", 
+                "domain", cleanDomain, "error", err)
+            
+            addrs, err = net.LookupHost(cleanDomain)
+            if err != nil {
+                return "", fmt.Errorf("all DNS resolutions failed for %s: %w", cleanDomain, err)
+            }
+        }
     }
 
+    if len(addrs) == 0 {
+        return "", fmt.Errorf("no IP addresses found for domain %s", cleanDomain)
+    }
+
+    // Возвращаем первый IPv4 адрес
     for _, addr := range addrs {
         if ip := net.ParseIP(addr); ip != nil && ip.To4() != nil {
+            logDebug("Resolved IP", "domain", cleanDomain, "ip", addr)
             return addr, nil
         }
     }
 
-    return "", fmt.Errorf("no IPv4 address found")
+    // Если нет IPv4, возвращаем первый IPv6
+    if len(addrs) > 0 {
+        logDebug("No IPv4 found, returning IPv6", "domain", cleanDomain, "ip", addrs[0])
+        return addrs[0], nil
+    }
+
+    return "", fmt.Errorf("no IP address found for domain %s", cleanDomain)
 }
