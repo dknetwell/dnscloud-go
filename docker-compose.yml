@@ -30,7 +30,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 40s  # Добавляем период запуска
+      start_period: 30s
+    # Добавляем альтернативный health check
+    # test: ["CMD-SHELL", "echo OK"]
 
   dns-proxy:
     build: .
