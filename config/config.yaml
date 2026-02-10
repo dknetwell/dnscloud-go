@@ -6,18 +6,18 @@ log_format: "json"
 
 # ТАЙМАУТЫ ДЛЯ КОНТРОЛЯ SLA 100ms
 timeouts:
-  total: 95ms
-  cloud_api: 50ms
+  total: 1000ms  # Увеличиваем общий таймаут
+  cloud_api: 2000ms  # Увеличиваем таймаут Cloud API
   cache_read: 5ms
   cache_write: 100ms
   dns_response: 10ms
 
 cloud_api:
   url: "https://172.16.10.33/api/"
-  key: "${CLOUD_API_KEY}"  # Это будет X-PAN-KEY
+  key: "${CLOUD_API_KEY}"
   rate_limit: 5
   burst: 2
-  timeout: 50ms
+  timeout: 2000ms  # Увеличиваем таймаут
 
 sinkholes:
   categories:
