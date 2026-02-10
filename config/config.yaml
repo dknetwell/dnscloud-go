@@ -1,13 +1,13 @@
 # DNS Proxy конфигурация
 dns_listen: "0.0.0.0:5353"
 http_listen: "0.0.0.0:8054"
-log_level: "info"
+log_level: "debug"  # Временно для отладки
 log_format: "json"
 
 # ТАЙМАУТЫ ДЛЯ КОНТРОЛЯ SLA 100ms
 timeouts:
-  total: 1000ms  # Увеличиваем общий таймаут
-  cloud_api: 2000ms  # Увеличиваем таймаут Cloud API
+  total: 100ms       # Общий SLA
+  cloud_api: 50ms    # Таймаут Cloud API
   cache_read: 5ms
   cache_write: 100ms
   dns_response: 10ms
@@ -17,7 +17,7 @@ cloud_api:
   key: "${CLOUD_API_KEY}"
   rate_limit: 5
   burst: 2
-  timeout: 2000ms  # Увеличиваем таймаут
+  timeout: 50ms
 
 sinkholes:
   categories:
@@ -30,12 +30,12 @@ sinkholes:
 
 ttl:
   by_category:
-    0: 300
-    1: 3600
+    0: 300      # Разрешено
+    1: 3600     # Заблокировано
     2: 3600
     3: 3600
     8: 3600
-    9: 86400
+    9: 86400    # Белый список
   fallback: 300
   min: 30
   max: 86400
