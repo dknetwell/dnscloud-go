@@ -1,23 +1,23 @@
 # DNS Proxy конфигурация
 dns_listen: "0.0.0.0:5353"
 http_listen: "0.0.0.0:8054"
-log_level: "debug"  # Временно для отладки
+log_level: "info"
 log_format: "json"
 
-# ТАЙМАУТЫ ДЛЯ КОНТРОЛЯ SLA 100ms
+# SLA для клиента - 100ms
 timeouts:
-  total: 100ms       # Общий SLA
-  cloud_api: 50ms    # Таймаут Cloud API
+  total: 100ms       # Общий SLA для клиента
+  cloud_api: 2000ms  # Таймаут для Cloud API (фоновый)
   cache_read: 5ms
   cache_write: 100ms
-  dns_response: 10ms
+  dns_response: 80ms # Таймаут на резолвинг реального IP
 
 cloud_api:
   url: "https://172.16.10.33/api/"
   key: "${CLOUD_API_KEY}"
-  rate_limit: 5
-  burst: 2
-  timeout: 50ms
+  rate_limit: 10     # Увеличиваем rate limit
+  burst: 5
+  timeout: 2000ms    # 2 секунды для Cloud API
 
 sinkholes:
   categories:
