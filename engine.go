@@ -7,14 +7,14 @@ import (
 
 // CheckEngine - движок проверок
 type CheckEngine struct {
-    cache     *CacheManager
+    Cache     *CacheManager
     apiClient *CloudAPIClient
     metrics   *MetricsCollector
 }
 
 func newCheckEngine(cache *CacheManager, apiClient *CloudAPIClient) *CheckEngine {
     return &CheckEngine{
-        cache:     cache,
+        Cache:     cache,
         apiClient: apiClient,
         metrics:   newMetricsCollector(),
     }
