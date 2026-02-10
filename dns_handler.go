@@ -117,7 +117,7 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
     // 1. Проверка кеша (самый быстрый путь)
     go func() {
-        if cached := s.engine.cache.get(domain); cached != nil {
+        if cached := s.engine.Cache.get(domain); cached != nil {  // Используем s.engine.Cache
             cached.Source = "cache"
             cacheResultChan <- cached
         }
@@ -135,7 +135,6 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
     }()
 
     // 3. Запуск проверки Cloud API в фоне (для обогащения кеша)
-    // Этот запрос продолжается даже после ответа клиенту
     go func() {
         // Используем отдельный контекст с таймаутом 2 секунды
         result, err := s.engine.checkDomainForCache(apiCtx, domain)
@@ -150,7 +149,7 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
     // Ждем результаты в рамках SLA клиента (100ms)
     var responseIP string
     var ttl uint32 = 300
-    var action = "allow" // По умолчанию разрешаем
+    var action = "allow"
 
     select {
     case cached := <-cacheResultChan:
@@ -210,7 +209,7 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         m.Answer = append(m.Answer, rr)
     }
 
-    // Отправляем ответ клиенту (в рамках SLA)
+    // Отправляем ответ клиенту
     if err := w.WriteMsg(m); err != nil {
         logError("Failed to write DNS response", err)
     }
@@ -223,11 +222,10 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         "ip", responseIP,
         "duration_ms", duration.Milliseconds())
 
-    // В фоне продолжаем ждать API результат для кеша (если еще не было)
+    // В фоне продолжаем ждать API результат для кеша
     go func() {
         select {
         case apiResult := <-apiResultChan:
-            // Обогащаем кеш результатом API
             logDebug("Enriching cache with API result", "domain", domain, "category", apiResult.Category)
         case <-time.After(2 * time.Second):
             // Таймаут фоновой проверки
@@ -244,7 +242,6 @@ func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, e
             d := net.Dialer{
                 Timeout: 50 * time.Millisecond,
             }
-            // Используем несколько публичных DNS для надежности
             dnsServers := []string{"8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53"}
             for _, server := range dnsServers {
                 conn, err := d.DialContext(ctx, network, server)
@@ -256,7 +253,6 @@ func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, e
         },
     }
 
-    // Таймаут на разрешение DNS
     resolveCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
     defer cancel()
 
