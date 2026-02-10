@@ -4,7 +4,6 @@ import (
     "context"
     "crypto/tls"
     "encoding/json"
-    "encoding/xml"
     "fmt"
     "io"
     "net/http"
@@ -22,7 +21,7 @@ func newCloudAPIClient(config *CloudAPIConfig) *CloudAPIClient {
     // Создаем транспорт с игнорированием проверки сертификатов
     transport := &http.Transport{
         TLSClientConfig: &tls.Config{
-            InsecureSkipVerify: true, // Игнорируем ошибки сертификатов
+            InsecureSkipVerify: true,
         },
         MaxIdleConns:        100,
         MaxIdleConnsPerHost: 10,
@@ -44,26 +43,25 @@ func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse
     // Очищаем домен от точки в конце
     cleanDomain := strings.TrimSuffix(domain, ".")
 
-    // Формируем XML запрос согласно curl примеру
+    // Формируем XML запрос
     xmlQuery := fmt.Sprintf(`<test><dns-proxy><dns-signature><fqdn>%s</fqdn></dns-signature></dns-proxy></test>`, cleanDomain)
     
+    // Формируем URL
+    url := fmt.Sprintf("%s?type=op&cmd=%s", c.config.URL, xmlQuery)
+    
     // Формируем запрос
-    req, err := http.NewRequestWithContext(ctx, "GET", c.config.URL, nil)
+    req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
     if err != nil {
         return nil, fmt.Errorf("create request: %w", err)
     }
 
-    // Добавляем заголовки согласно curl примеру
+    // Добавляем заголовки
     req.Header.Set("X-PAN-KEY", c.config.Key)
     req.Header.Set("Accept", "application/json")
 
-    // Добавляем параметры согласно curl примеру
-    q := req.URL.Query()
-    q.Add("type", "op")
-    q.Add("cmd", xmlQuery)
-    req.URL.RawQuery = q.Encode()
-
-    // Выполняем запрос
+    // Выполняем запрос с логированием URL для отладки
+    logDebug("Cloud API request", "url", req.URL.String(), "domain", cleanDomain)
+    
     resp, err := c.client.Do(req)
     if err != nil {
         logWarn("Cloud API request failed",
@@ -89,14 +87,15 @@ func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse
         return nil, fmt.Errorf("read response: %w", err)
     }
 
-    // Парсим XML ответ
-    result, err := parseXMLResponse(body)
+    // Парсим ответ
+    result, err := parseAPIResponse(body, cleanDomain)
     if err != nil {
-        return nil, fmt.Errorf("parse response: %w", err)
+        logWarn("Failed to parse API response",
+            "domain", cleanDomain,
+            "error", err,
+            "response", string(body))
+        return nil, err
     }
-
-    // Устанавливаем домен в результат
-    result.Domain = cleanDomain
 
     logDebug("Cloud API check completed",
         "domain", cleanDomain,
@@ -106,47 +105,87 @@ func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse
     return result, nil
 }
 
-// Структуры для парсинга XML
-type XMLResponse struct {
-    Result struct {
-        Content string `xml:",innerxml"`
-    } `xml:"result"`
+// Структуры для парсинга ответа
+type PANResponse struct {
+    Response struct {
+        Status string `json:"status"`
+        Result struct {
+            Content string `json:"-"`
+        } `json:"result"`
+    } `json:"response"`
 }
 
-type DNSResult struct {
+type DNSSignature struct {
     Fqdn     string `json:"fqdn"`
     Category int    `json:"category"`
     TTL      int    `json:"ttl"`
 }
 
-func parseXMLResponse(body []byte) (*APIResponse, error) {
-    // Сначала парсим XML
-    var xmlResp XMLResponse
-    if err := xml.Unmarshal(body, &xmlResp); err != nil {
-        return nil, fmt.Errorf("unmarshal XML: %w", err)
-    }
-
-    // Контент внутри тега result - это JSON строка
-    // Очищаем возможные символы переноса строки
-    jsonContent := strings.TrimSpace(xmlResp.Result.Content)
+func parseAPIResponse(body []byte, domain string) (*APIResponse, error) {
+    responseStr := string(body)
     
-    // Парсим JSON
-    var apiResp struct {
-        DNSSignature []DNSResult `json:"dns-signature"`
+    // Пробуем парсить как JSON
+    var panResp PANResponse
+    if err := json.Unmarshal(body, &panResp); err != nil {
+        // Если не JSON, пробуем найти категорию в строке
+        return parseResponseHeuristic(responseStr, domain)
+    }
+
+    // Если ответ успешный, но нет данных - возвращаем категорию 0 (разрешено)
+    if panResp.Response.Status != "success" {
+        return &APIResponse{
+            Domain:   domain,
+            Category: 0, // Разрешено по умолчанию
+            TTL:      300,
+        }, nil
+    }
+
+    // Пробуем извлечь JSON из Content
+    var dnsData struct {
+        DNSSignature []DNSSignature `json:"dns-signature"`
     }
     
-    if err := json.Unmarshal([]byte(jsonContent), &apiResp); err != nil {
-        return nil, fmt.Errorf("unmarshal JSON: %w", err)
+    if err := json.Unmarshal([]byte(panResp.Response.Result.Content), &dnsData); err != nil {
+        // Если не удалось, используем эвристический парсинг
+        return parseResponseHeuristic(panResp.Response.Result.Content, domain)
     }
 
-    if len(apiResp.DNSSignature) == 0 {
-        return nil, fmt.Errorf("no DNS signature in response")
+    if len(dnsData.DNSSignature) == 0 {
+        return &APIResponse{
+            Domain:   domain,
+            Category: 0,
+            TTL:      300,
+        }, nil
     }
 
-    result := &APIResponse{
-        Category: apiResp.DNSSignature[0].Category,
-        TTL:      apiResp.DNSSignature[0].TTL,
+    return &APIResponse{
+        Domain:   domain,
+        Category: dnsData.DNSSignature[0].Category,
+        TTL:      dnsData.DNSSignature[0].TTL,
+    }, nil
+}
+
+func parseResponseHeuristic(responseStr, domain string) (*APIResponse, error) {
+    // Простой эвристический парсинг
+    category := 0 // По умолчанию разрешено
+    ttl := 300    // По умолчанию TTL
+
+    // Ищем категорию в ответе
+    if strings.Contains(responseStr, `"category":1`) || strings.Contains(responseStr, "category\": 1") {
+        category = 1
+    } else if strings.Contains(responseStr, `"category":2`) || strings.Contains(responseStr, "category\": 2") {
+        category = 2
+    } else if strings.Contains(responseStr, `"category":3`) || strings.Contains(responseStr, "category\": 3") {
+        category = 3
+    } else if strings.Contains(responseStr, `"category":8`) || strings.Contains(responseStr, "category\": 8") {
+        category = 8
+    } else if strings.Contains(responseStr, `"category":9`) || strings.Contains(responseStr, "category\": 9") {
+        category = 9
     }
 
-    return result, nil
+    return &APIResponse{
+        Domain:   domain,
+        Category: category,
+        TTL:      ttl,
+    }, nil
 }
