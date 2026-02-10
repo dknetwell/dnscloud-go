@@ -132,7 +132,6 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
     // Ждем результаты
     var checkResult *DomainResult
-    var realIP string
     var action string
     var responseIP string
 
@@ -145,7 +144,6 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         if result.Action == "allow" {
             select {
             case ip := <-realIPChan:
-                realIP = ip
                 responseIP = ip
             case <-time.After(50 * time.Millisecond):
                 // Если не успели получить IP - используем fallback
@@ -158,7 +156,6 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         }
         
     case ip := <-realIPChan:
-        realIP = ip
         // Если проверка категории не успела - разрешаем домен
         action = "allow"
         responseIP = ip
@@ -170,6 +167,14 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
         responseIP = "8.8.8.8"
     }
 
+    // Если checkResult nil (не успели получить), создаем fallback
+    if checkResult == nil {
+        checkResult = &DomainResult{
+            Category: 0,
+            TTL:      getTTLByCategory(0),
+        }
+    }
+
     // Формируем ответ в зависимости от типа запроса
     switch q.Qtype {
     case dns.TypeA:
@@ -178,7 +183,7 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
                 Name:   q.Name,
                 Rrtype: dns.TypeA,
                 Class:  dns.ClassINET,
-                Ttl:    uint32(getTTLByCategory(checkResult.Category)),
+                Ttl:    uint32(checkResult.TTL),
             },
             A: net.ParseIP(responseIP).To4(),
         }
@@ -190,7 +195,7 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
                 Name:   q.Name,
                 Rrtype: dns.TypeAAAA,
                 Class:  dns.ClassINET,
-                Ttl:    uint32(getTTLByCategory(checkResult.Category)),
+                Ttl:    uint32(checkResult.TTL),
             },
             AAAA: net.ParseIP("::1"), // IPv6 sinkhole
         }
@@ -217,7 +222,13 @@ func (s *DNSServer) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 // resolveRealIP - получение реального IP из публичного DNS
 func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, error) {
-    // Используем системные резолверы
+    // Очищаем точку в конце
+    cleanDomain := domain
+    if len(cleanDomain) > 0 && cleanDomain[len(cleanDomain)-1] == '.' {
+        cleanDomain = cleanDomain[:len(cleanDomain)-1]
+    }
+
+    // Используем системные резолверы с таймаутом
     resolver := &net.Resolver{
         PreferGo: true,
         Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -230,13 +241,13 @@ func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, e
     }
 
     // Разрешаем домен
-    addrs, err := resolver.LookupHost(ctx, domain)
+    addrs, err := resolver.LookupHost(ctx, cleanDomain)
     if err != nil {
         return "", err
     }
 
     if len(addrs) == 0 {
-        return "", fmt.Errorf("no IP found for domain %s", domain)
+        return "", fmt.Errorf("no IP found for domain %s", cleanDomain)
     }
 
     // Возвращаем первый IPv4 адрес
@@ -246,5 +257,5 @@ func (s *DNSServer) resolveRealIP(ctx context.Context, domain string) (string, e
         }
     }
 
-    return "", fmt.Errorf("no IPv4 address found for domain %s", domain)
+    return "", fmt.Errorf("no IPv4 address found for domain %s", cleanDomain)
 }
