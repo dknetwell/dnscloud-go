@@ -1,7 +1,7 @@
 # DNS Proxy конфигурация
 dns_listen: "0.0.0.0:5353"
 http_listen: "0.0.0.0:8054"
-log_level: "info"
+log_level: "debug"  # Включите debug для тестирования
 log_format: "json"
 
 # SLA для клиента - 100ms
