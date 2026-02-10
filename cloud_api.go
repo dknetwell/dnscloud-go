@@ -8,17 +8,16 @@ import (
     "net/http"
     "strings"
     "time"
-    "golang.org/x/time/rate"
 )
 
 // CloudAPIClient - клиент Cloud API
 type CloudAPIClient struct {
     config *CloudAPIConfig
     client *http.Client
-    limiter *rate.Limiter
 }
 
 func newCloudAPIClient(config *CloudAPIConfig) *CloudAPIClient {
+    // Создаем транспорт с игнорированием проверки сертификатов
     transport := &http.Transport{
         TLSClientConfig: &tls.Config{
             InsecureSkipVerify: true,
@@ -31,18 +30,18 @@ func newCloudAPIClient(config *CloudAPIConfig) *CloudAPIClient {
         ExpectContinueTimeout: 1 * time.Second,
     }
 
+    client := &http.Client{
+        Timeout:   2 * time.Second, // Увеличенный таймаут
+        Transport: transport,
+    }
+
     return &CloudAPIClient{
         config: config,
         client: client,
-        limiter: rate.NewLimiter(rate.Limit(config.RateLimit), config.Burst),
     }
 }
 
 func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse, error) {
-        // Применяем rate limiting
-    if err := c.limiter.Wait(ctx); err != nil {
-        return nil, fmt.Errorf("rate limit exceeded: %w", err)
-    }
     start := time.Now()
 
     cleanDomain := strings.TrimSuffix(domain, ".")
