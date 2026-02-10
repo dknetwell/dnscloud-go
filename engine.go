@@ -25,14 +25,15 @@ func (e *CheckEngine) checkDomainForCache(ctx context.Context, domain string) (*
     start := time.Now()
 
     // Пробуем кеш
-    if cached := e.Cache.get(domain); cached != nil {  // Используем e.Cache
+    if cached := e.Cache.get(domain); cached != nil {
         return cached, nil
     }
 
     // Запрашиваем Cloud API с увеличенным таймаутом
     apiResult, err := e.apiClient.check(ctx, domain)
     if err != nil {
-        logWarn("Background API check failed",
+        // Используем Debug вместо Warn для фоновых ошибок
+        logDebug("Background API check failed",
             "domain", domain,
             "error", err,
             "duration_ms", time.Since(start).Milliseconds())
@@ -43,7 +44,7 @@ func (e *CheckEngine) checkDomainForCache(ctx context.Context, domain string) (*
     result := e.createResultFromAPI(apiResult)
 
     // Сохраняем в кеш
-    e.Cache.set(domain, result)  // Используем e.Cache
+    e.Cache.set(domain, result)
 
     logDebug("Background API check completed",
         "domain", domain,
