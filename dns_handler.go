@@ -4,6 +4,7 @@ import (
     "context"
     "fmt"
     "net"
+    "strings"
     "time"
 
     "github.com/miekg/dns"
