@@ -3,7 +3,6 @@ package main
 import (
     "context"
     "crypto/tls"
-    "encoding/json"
     "fmt"
     "io"
     "net/http"
@@ -85,9 +84,10 @@ func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse
         return nil, fmt.Errorf("read response: %w", err)
     }
 
-    // Упрощенный парсинг - ищем категорию в XML
+    // Парсим ответ
     bodyStr := string(body)
     category := 0 // По умолчанию разрешено
+    ttl := 300    // По умолчанию TTL
     
     // Ищем категорию в ответе
     if strings.Contains(bodyStr, `"category":1`) {
@@ -102,8 +102,6 @@ func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse
         category = 9
     }
 
-    // Ищем TTL в ответе
-    ttl := 300 // По умолчанию
     // Простой парсинг для TTL
     if idx := strings.Index(bodyStr, `"ttl":`); idx != -1 {
         endIdx := strings.Index(bodyStr[idx:], ",")
@@ -112,7 +110,10 @@ func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse
         }
         if endIdx != -1 {
             ttlStr := bodyStr[idx+6 : idx+endIdx]
-            fmt.Sscanf(strings.TrimSpace(ttlStr), "%d", &ttl)
+            // Убираем возможные кавычки и пробелы
+            ttlStr = strings.Trim(ttlStr, `" `)
+            // Пробуем преобразовать в число
+            fmt.Sscanf(ttlStr, "%d", &ttl)
         }
     }
 
