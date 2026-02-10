@@ -5,7 +5,7 @@ import (
     "time"
 )
 
-// CheckEngine - движок проверок с контролем SLA
+// CheckEngine - движок проверок
 type CheckEngine struct {
     cache     *CacheManager
     apiClient *CloudAPIClient
@@ -20,87 +20,60 @@ func newCheckEngine(cache *CacheManager, apiClient *CloudAPIClient) *CheckEngine
     }
 }
 
-func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainResult, error) {
+// checkDomainForCache - проверка домена только для обогащения кеша
+// Используется в фоне после ответа клиенту
+func (e *CheckEngine) checkDomainForCache(ctx context.Context, domain string) (*DomainResult, error) {
     start := time.Now()
 
-    // Устанавливаем общий таймаут SLA - 100ms
-    slaCtx, cancel := context.WithTimeout(ctx, getConfig().Timeouts.Total)
-    defer cancel()
-
-    // Канал для результата
-    resultChan := make(chan *DomainResult, 1)
-    errorChan := make(chan error, 1)
-
-    // Запускаем проверку в горутине
-    go e.processCheck(slaCtx, domain, resultChan, errorChan)
-
-    // Ждем результат или таймаут SLA
-    select {
-    case result := <-resultChan:
-        result.ProcessingTime = time.Since(start)
-
-        // Записываем метрику
-        e.metrics.recordCheckDuration(result.ProcessingTime, result.Source)
-
-        // Логируем если близко к лимиту
-        if result.ProcessingTime > 80*time.Millisecond {
-            logWarn("Check close to SLA limit",
-                "domain", domain,
-                "duration", result.ProcessingTime.String(),
-                "sla_limit", getConfig().Timeouts.Total.String())
-        }
-
-        return result, nil
-
-    case err := <-errorChan:
-        return e.createFallbackResult(domain, "error"), err
-
-    case <-slaCtx.Done():
-        // SLA ТАЙМАУТ - возвращаем fallback (разрешаем)
-        logWarn("SLA timeout reached",
-            "domain", domain,
-            "timeout", getConfig().Timeouts.Total.String())
-
-        e.metrics.incTimeout()
-        return e.createFallbackResult(domain, "timeout"), nil
+    // Пробуем кеш
+    if cached := e.cache.get(domain); cached != nil {
+        return cached, nil
     }
+
+    // Запрашиваем Cloud API с увеличенным таймаутом
+    apiResult, err := e.apiClient.check(ctx, domain)
+    if err != nil {
+        logWarn("Background API check failed",
+            "domain", domain,
+            "error", err,
+            "duration_ms", time.Since(start).Milliseconds())
+        return nil, err
+    }
+
+    // Создаем результат
+    result := e.createResultFromAPI(apiResult)
+
+    // Сохраняем в кеш
+    e.cache.set(domain, result)
+
+    logDebug("Background API check completed",
+        "domain", domain,
+        "category", result.Category,
+        "duration_ms", time.Since(start).Milliseconds())
+
+    return result, nil
 }
 
-func (e *CheckEngine) processCheck(ctx context.Context, domain string,
-    resultChan chan<- *DomainResult, errorChan chan<- error) {
-
-    // 1. Проверка кеша (быстрый путь)
+// checkDomain - основная проверка (используется если есть в кеше)
+func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainResult, error) {
+    // В основном только проверяем кеш
     if cached := e.cache.get(domain); cached != nil {
-        cached.Source = "cache"
-        resultChan <- cached
         e.metrics.incCacheHit()
-        return
+        return cached, nil
     }
 
     e.metrics.incCacheMiss()
-
-    // 2. Проверка через Cloud API с таймаутом 50ms
-    apiCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-    defer cancel()
-
-    apiResult, err := e.apiClient.check(apiCtx, domain)
-    if err != nil {
-        logWarn("Cloud API check failed",
-            "domain", domain,
-            "error", err)
-
-        // В случае ошибки API - разрешаем домен
-        resultChan <- e.createFallbackResult(domain, "api_error")
-        return
-    }
-
-    // 3. Создаем результат
-    result := e.createResultFromAPI(apiResult)
-
-    // 4. Кешируем результат (асинхронно)
-    go e.cache.set(domain, result)
-
-    resultChan <- result
+    
+    // Если нет в кеше, возвращаем разрешенный результат
+    // Cloud API будет проверен в фоне
+    return &DomainResult{
+        Domain:   domain,
+        Action:   "allow",
+        Category: 0,
+        TTL:      getTTLByCategory(0),
+        Source:   "cache_miss_fallback",
+        Timestamp: time.Now(),
+    }, nil
 }
 
 func (e *CheckEngine) createResultFromAPI(apiResult *APIResponse) *DomainResult {
@@ -113,7 +86,6 @@ func (e *CheckEngine) createResultFromAPI(apiResult *APIResponse) *DomainResult 
     }
 
     // Определяем действие по категории
-    // Категории 0 и 9 - разрешены, остальные - заблокированы
     if apiResult.Category == 0 || apiResult.Category == 9 {
         result.Action = "allow"
     } else {
@@ -122,18 +94,6 @@ func (e *CheckEngine) createResultFromAPI(apiResult *APIResponse) *DomainResult 
     }
 
     return result
-}
-
-func (e *CheckEngine) createFallbackResult(domain, reason string) *DomainResult {
-    // В случае любой ошибки - разрешаем домен
-    return &DomainResult{
-        Domain:   domain,
-        Action:   "allow",
-        Category: 0,
-        TTL:      getTTLByCategory(0),
-        Source:   "fallback:" + reason,
-        Timestamp: time.Now(),
-    }
 }
 
 func (e *CheckEngine) getStats() *Stats {
