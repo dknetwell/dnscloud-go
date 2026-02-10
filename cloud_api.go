@@ -57,12 +57,11 @@ func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse
     req.Header.Set("X-PAN-KEY", c.config.Key)
     req.Header.Set("Accept", "application/json")
 
-    // Добавляем таймаут на соединение
     logDebug("Cloud API request", "url", url, "domain", cleanDomain)
     
     resp, err := c.client.Do(req)
     if err != nil {
-        // Не логируем как ошибку, это нормально для фоновой проверки
+        // Используем Debug вместо Warn для фоновых запросов
         logDebug("Cloud API request failed",
             "domain", cleanDomain,
             "error", err,
