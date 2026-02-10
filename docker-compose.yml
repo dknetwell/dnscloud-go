@@ -17,10 +17,11 @@ services:
     cap_add:
       - NET_BIND_SERVICE
     networks:
-      - dns-net
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      dns-net:
+        aliases:
+          - coredns.local
+    extra_hosts:
+      - "dns-proxy:172.20.0.3"
     depends_on:
       dns-proxy:
         condition: service_healthy
@@ -42,7 +43,8 @@ services:
     volumes:
       - ./config:/app/config:ro
     networks:
-      - dns-net
+      dns-net:
+        ipv4_address: 172.20.0.3
     depends_on:
       valkey:
         condition: service_healthy
@@ -51,8 +53,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   valkey:
     image: valkey/valkey:7.2.5-alpine
@@ -68,7 +68,8 @@ services:
     volumes:
       - valkey-data:/data
     networks:
-      - dns-net
+      dns-net:
+        ipv4_address: 172.20.0.2
     healthcheck:
       test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD:-SecurePass123!}", "ping"]
       interval: 10s
@@ -81,6 +82,7 @@ networks:
     ipam:
       config:
         - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
 
 volumes:
   valkey-data:
