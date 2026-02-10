@@ -36,7 +36,7 @@ LOG_LEVEL=info
 RATE_LIMIT_RPS=5
 EOF
     fi
-    
+
     echo ""
     echo "⚠️  IMPORTANT: Please edit .env file and set your CLOUD_API_KEY"
     echo "   Then run this script again."
@@ -59,6 +59,17 @@ if [ ! -f config/config.yaml ]; then
     exit 1
 fi
 
+# Проверяем наличие go.mod и делаем go mod tidy если нужно
+if [ -f go.mod ]; then
+    echo "📦 Checking Go dependencies..."
+    if command -v go &> /dev/null; then
+        echo "  Running go mod tidy..."
+        go mod tidy 2>&1 | grep -v "warning: " || true
+    else
+        echo "  ⚠️  Go not installed, skipping go mod tidy"
+    fi
+fi
+
 # Создаем сертификаты если нет
 if [ ! -f certs/server.crt ]; then
     echo "🔐 Generating self-signed certificates..."
@@ -71,7 +82,8 @@ chmod 644 certs/* 2>/dev/null || true
 
 echo "🐳 Building and starting containers..."
 docker compose down 2>/dev/null || true
-docker compose up -d --build
+docker compose build --no-cache
+docker compose up -d
 
 echo ""
 echo "⏳ Waiting for services to start (40 seconds)..."
@@ -113,14 +125,14 @@ echo ""
 echo "🧪 Testing DNS..."
 if command -v dig &> /dev/null; then
     echo "Testing DNS with dig..."
-    
+
     # Проверяем что DNS Proxy слушает
     if docker compose exec -T dns-proxy netstat -tln 2>/dev/null | grep -q ":5353"; then
         echo "  ✅ DNS Proxy listening on 5353"
     else
         echo "  ❌ DNS Proxy NOT listening on 5353"
     fi
-    
+
     # Тестируем DNS
     echo -n "  DNS query: "
     if result=$(timeout 10 dig @127.0.0.1 example.com +short 2>&1); then
