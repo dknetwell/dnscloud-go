@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   coredns:
     image: coredns/coredns:1.14.1
