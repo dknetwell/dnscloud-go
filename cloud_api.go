@@ -1,129 +1,81 @@
 package main
 
 import (
-    "context"
-    "crypto/tls"
-    "fmt"
-    "io"
-    "net/http"
-    "strings"
-    "time"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"golang.org/x/time/rate"
 )
 
-// CloudAPIClient - клиент Cloud API
-type CloudAPIClient struct {
-    config *CloudAPIConfig
-    client *http.Client
+type CloudAPIEnricher struct {
+	cfg     *Config
+	client  *http.Client
+	limiter *rate.Limiter
 }
 
-func newCloudAPIClient(config *CloudAPIConfig) *CloudAPIClient {
-    // Создаем транспорт с игнорированием проверки сертификатов
-    transport := &http.Transport{
-        TLSClientConfig: &tls.Config{
-            InsecureSkipVerify: true,
-        },
-        MaxIdleConns:        100,
-        MaxIdleConnsPerHost: 10,
-        IdleConnTimeout:     90 * time.Second,
-        // Увеличиваем таймауты для медленного API
-        ResponseHeaderTimeout: 30 * time.Second,
-        ExpectContinueTimeout: 1 * time.Second,
-    }
-
-    client := &http.Client{
-        Timeout:   2 * time.Second, // Увеличенный таймаут
-        Transport: transport,
-    }
-
-    return &CloudAPIClient{
-        config: config,
-        client: client,
-    }
+type cloudResponse struct {
+	Blocked  bool   `json:"blocked"`
+	Category int    `json:"category"`
+	TTL      int    `json:"ttl"`
+	CNAME    string `json:"cname"`
 }
 
-func (c *CloudAPIClient) check(ctx context.Context, domain string) (*APIResponse, error) {
-    start := time.Now()
+func NewCloudAPIEnricher(cfg *Config) *CloudAPIEnricher {
 
-    cleanDomain := strings.TrimSuffix(domain, ".")
-    xmlQuery := fmt.Sprintf(`<test><dns-proxy><dns-signature><fqdn>%s</fqdn></dns-signature></dns-proxy></test>`, cleanDomain)
-    
-    url := fmt.Sprintf("%s?type=op&cmd=%s", c.config.URL, xmlQuery)
-    
-    req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-    if err != nil {
-        return nil, fmt.Errorf("create request: %w", err)
-    }
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: cfg.CloudAPI.InsecureSkipVerify,
+		},
+	}
 
-    req.Header.Set("X-PAN-KEY", c.config.Key)
-    req.Header.Set("Accept", "application/json")
+	return &CloudAPIEnricher{
+		cfg: cfg,
+		client: &http.Client{
+			Timeout:   2 * time.Second,
+			Transport: tr,
+		},
+		limiter: rate.NewLimiter(
+			rate.Limit(cfg.CloudAPI.RateLimit),
+			cfg.CloudAPI.Burst,
+		),
+	}
+}
 
-    logDebug("Cloud API request", "url", url, "domain", cleanDomain)
-    
-    resp, err := c.client.Do(req)
-    if err != nil {
-        // Используем Debug вместо Warn для фоновых запросов
-        logDebug("Cloud API request failed",
-            "domain", cleanDomain,
-            "error", err,
-            "duration_ms", time.Since(start).Milliseconds())
-        return nil, err
-    }
-    defer resp.Body.Close()
+func (c *CloudAPIEnricher) Name() string {
+	return "cloud_api"
+}
 
-    if resp.StatusCode != http.StatusOK {
-        logDebug("Cloud API returned non-OK status",
-            "domain", cleanDomain,
-            "status", resp.StatusCode)
-        return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
-    }
+func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *DomainResult) error {
 
-    body, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return nil, fmt.Errorf("read response: %w", err)
-    }
+	if err := c.limiter.Wait(ctx); err != nil {
+		return err
+	}
 
-    // Парсим ответ
-    bodyStr := string(body)
-    category := 0
-    ttl := 300
-    
-    // Ищем категорию
-    if strings.Contains(bodyStr, `"category":1`) || strings.Contains(bodyStr, `"category": 1`) {
-        category = 1
-    } else if strings.Contains(bodyStr, `"category":2`) || strings.Contains(bodyStr, `"category": 2`) {
-        category = 2
-    } else if strings.Contains(bodyStr, `"category":3`) || strings.Contains(bodyStr, `"category": 3`) {
-        category = 3
-    } else if strings.Contains(bodyStr, `"category":8`) || strings.Contains(bodyStr, `"category": 8`) {
-        category = 8
-    } else if strings.Contains(bodyStr, `"category":9`) || strings.Contains(bodyStr, `"category": 9`) {
-        category = 9
-    }
+	req, _ := http.NewRequestWithContext(ctx,
+		"GET",
+		c.cfg.CloudAPI.Endpoint+"?domain="+domain,
+		nil,
+	)
 
-    // Ищем TTL
-    if idx := strings.Index(bodyStr, `"ttl":`); idx != -1 {
-        endIdx := strings.Index(bodyStr[idx:], ",")
-        if endIdx == -1 {
-            endIdx = strings.Index(bodyStr[idx:], "}")
-        }
-        if endIdx != -1 {
-            ttlStr := bodyStr[idx+6 : idx+endIdx]
-            ttlStr = strings.Trim(ttlStr, `" `)
-            fmt.Sscanf(ttlStr, "%d", &ttl)
-        }
-    }
+	req.Header.Set("Authorization", "Bearer "+c.cfg.CloudAPI.APIKey)
 
-    result := &APIResponse{
-        Domain:   cleanDomain,
-        Category: category,
-        TTL:      ttl,
-    }
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
-    logDebug("Cloud API check successful",
-        "domain", cleanDomain,
-        "category", category,
-        "ttl", ttl,
-        "duration_ms", time.Since(start).Milliseconds())
+	var parsed cloudResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return err
+	}
 
-    return result, nil
+	result.Blocked = parsed.Blocked
+	result.TTL = parsed.TTL
+	result.CNAME = parsed.CNAME
+
+	return nil
 }
