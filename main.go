@@ -3,8 +3,9 @@ package main
 import (
 	"log"
 	"net"
-
-	"github.com/miekg/dns"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 var netResolver *net.Resolver
@@ -13,37 +14,47 @@ func main() {
 
 	cfg, err := LoadConfig("config/config.yaml")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("config load error: %v", err)
 	}
 
+	InitLogger(cfg)
 	initMetrics()
 
+	// L1 cache (Ristretto)
 	cache := NewCache(cfg)
 
-	cloud := NewCloudAPIEnricher(cfg)
+	// Valkey client (L2 cache)
+	valkeyClient, err := NewValkeyClient(cfg)
+	if err != nil {
+		log.Fatalf("valkey connection error: %v", err)
+	}
 
-	engine := NewCheckEngine(
-		cfg,
-		cache,
-		[]Enricher{cloud},
-	)
+	// Enrichers
+	enrichers := []Enricher{
+		NewCloudAPIEnricher(cfg),
+	}
+
+	engine := NewCheckEngine(cfg, cache, valkeyClient, enrichers)
 
 	netResolver = &net.Resolver{
 		PreferGo: true,
 	}
 
+	// DNS server
 	dnsServer := NewDNSServer(engine, cfg)
+	go dnsServer.Start()
 
-	dns.HandleFunc(".", dnsServer.HandleDNS)
+	// HTTP server (stats + metrics)
+	httpServer := NewHTTPServer(engine, cfg)
+	go httpServer.Start()
 
-	server := &dns.Server{
-		Addr: ":5353",
-		Net:  "udp",
-	}
+	LogInfo("system", "DNS Security Proxy started")
 
-	log.Println("DNS proxy started on :5353")
+	// graceful shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
 
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
-	}
+	LogInfo("system", "Shutting down...")
+	engine.Shutdown()
 }
