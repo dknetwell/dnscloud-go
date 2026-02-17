@@ -2,136 +2,135 @@ package main
 
 import (
 	"context"
-	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 )
 
-type Enricher interface {
-	Name() string
-	Enrich(ctx context.Context, domain string, result *DomainResult) error
-}
-
-type CheckEngine struct {
-	cfg        *Config
-	cache      *Cache
-	enrichers  []Enricher
-	sf         singleflight.Group
-	jobQueue   chan enrichmentJob
-	wg         sync.WaitGroup
-}
-
 type enrichmentJob struct {
-	ctx    context.Context
 	domain string
 	result *DomainResult
 }
 
-func NewCheckEngine(cfg *Config, cache *Cache, enrichers []Enricher) *CheckEngine {
+type CheckEngine struct {
+	cfg      *Config
+	cache    *Cache
+	valkey   *ValkeyClient
+	enrichers []Enricher
 
-	engine := &CheckEngine{
+	jobs      chan enrichmentJob
+	wg        sync.WaitGroup
+	sf        singleflight.Group
+
+	stats Stats
+}
+
+func NewCheckEngine(cfg *Config, cache *Cache, valkey *ValkeyClient, enrichers []Enricher) *CheckEngine {
+
+	e := &CheckEngine{
 		cfg:       cfg,
 		cache:     cache,
+		valkey:    valkey,
 		enrichers: enrichers,
-		jobQueue:  make(chan enrichmentJob, cfg.Engine.WorkerQueueSize),
+		jobs:      make(chan enrichmentJob, cfg.Engine.WorkerQueueSize),
 	}
 
 	for i := 0; i < cfg.Engine.WorkerCount; i++ {
-		engine.wg.Add(1)
-		go engine.worker()
+		e.wg.Add(1)
+		go e.worker()
 	}
 
-	return engine
+	return e
+}
+
+func (e *CheckEngine) Shutdown() {
+	close(e.jobs)
+	e.wg.Wait()
 }
 
 func (e *CheckEngine) worker() {
 	defer e.wg.Done()
-	for job := range e.jobQueue {
+
+	for job := range e.jobs {
+		ctx, cancel := context.WithTimeout(context.Background(),
+			time.Duration(e.cfg.CloudAPI.TimeoutSeconds)*time.Second)
+
 		for _, enricher := range e.enrichers {
-			_ = enricher.Enrich(job.ctx, job.domain, job.result)
+			enricher.Enrich(ctx, job.domain, job.result)
 		}
+
+		cancel()
+
+		e.cache.Set(job.domain, job.result)
+		e.valkey.SetAsync(job.domain, job.result)
+
+		atomic.AddInt64(&e.stats.APICalls, 1)
 	}
 }
 
-func (e *CheckEngine) CheckDomain(ctx context.Context, domain string) (*DomainResult, error) {
+func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 
-	if cached, ok := e.cache.Get(domain); ok {
-		incrementCacheHit()
-		return cached, nil
+	start := time.Now()
+	atomic.AddInt64(&e.stats.TotalRequests, 1)
+
+	// L1 cache
+	if r, ok := e.cache.Get(domain); ok {
+		atomic.AddInt64(&e.stats.CacheHits, 1)
+		return r, nil
 	}
 
-	val, err, _ := e.sf.Do(domain, func() (interface{}, error) {
+	atomic.AddInt64(&e.stats.CacheMisses, 1)
+
+	// L2 cache (Valkey)
+	if r, ok := e.valkey.Get(domain); ok {
+		e.cache.Set(domain, r)
+		return r, nil
+	}
+
+	// singleflight
+	v, _, _ := e.sf.Do(domain, func() (interface{}, error) {
 
 		result := &DomainResult{
-			Domain: domain,
-		}
-
-		err := e.resolveRealIP(ctx, result)
-		if err != nil {
-			return nil, err
+			Domain:    domain,
+			Category:  0,
+			Action:    "allow",
+			TTL:       e.cfg.TTL.Default,
+			Source:    "engine",
+			Timestamp: time.Now(),
 		}
 
 		select {
-		case e.jobQueue <- enrichmentJob{
-			ctx:    ctx,
-			domain: domain,
-			result: result,
-		}:
+		case e.jobs <- enrichmentJob{domain: domain, result: result}:
 		default:
-			// очередь переполнена — деградируем gracefully
+			// queue full → negative short TTL
+			result.Negative = true
+			result.TTL = 10
 		}
-
-		e.applyTTLPolicy(result)
-		e.cache.Set(domain, result)
 
 		return result, nil
 	})
 
-	if err != nil {
-		e.cache.SetNegative(domain, 20*time.Second)
-		return nil, err
+	res := v.(*DomainResult)
+
+	// clamp TTL
+	if res.TTL < e.cfg.TTL.Min {
+		res.TTL = e.cfg.TTL.Min
+	}
+	if res.TTL > e.cfg.TTL.Max {
+		res.TTL = e.cfg.TTL.Max
 	}
 
-	return val.(*DomainResult), nil
+	res.Timestamp = time.Now()
+	atomic.AddInt64(&e.stats.AvgLatency,
+		int64(time.Since(start)))
+
+	return res, nil
 }
 
-func (e *CheckEngine) resolveRealIP(ctx context.Context, result *DomainResult) error {
-
-	ips, err := netResolver.LookupIPAddr(ctx, result.Domain)
-	if err != nil {
-		return err
-	}
-
-	for _, ip := range ips {
-		if ip.IP.To4() != nil {
-			result.RealIP = ip.IP
-		} else {
-			result.RealIPv6 = ip.IP
-		}
-	}
-
-	if result.RealIP == nil && result.RealIPv6 == nil {
-		return errors.New("no ip resolved")
-	}
-
-	return nil
-}
-
-func (e *CheckEngine) applyTTLPolicy(result *DomainResult) {
-
-	ttl := result.TTL
-	if ttl == 0 {
-		ttl = e.cfg.TTL.Default
-	}
-
-	if ttl < e.cfg.TTL.Min {
-		ttl = e.cfg.TTL.Min
-	}
-	if ttl > e.cfg.TTL.Max {
-		ttl = e.cfg.TTL.Max
-	}
-
-	result.TTL = ttl
+func (e *CheckEngine) GetStats() Stats {
+	s := e.stats
+	s.EnrichmentQueue = len(e.jobs)
+	return s
 }
