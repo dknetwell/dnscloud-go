@@ -1,100 +1,137 @@
 package main
 
 import (
-    "context"
-    "time"
+	"context"
+	"errors"
+	"sync"
+	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
-// CheckEngine - движок проверок
+type Enricher interface {
+	Name() string
+	Enrich(ctx context.Context, domain string, result *DomainResult) error
+}
+
 type CheckEngine struct {
-    Cache     *CacheManager  // Публичное поле с заглавной буквы
-    apiClient *CloudAPIClient
-    metrics   *MetricsCollector
+	cfg        *Config
+	cache      *Cache
+	enrichers  []Enricher
+	sf         singleflight.Group
+	jobQueue   chan enrichmentJob
+	wg         sync.WaitGroup
 }
 
-func newCheckEngine(cache *CacheManager, apiClient *CloudAPIClient) *CheckEngine {
-    return &CheckEngine{
-        Cache:     cache,      // Используем заглавную букву
-        apiClient: apiClient,
-        metrics:   newMetricsCollector(),
-    }
+type enrichmentJob struct {
+	ctx    context.Context
+	domain string
+	result *DomainResult
 }
 
-// checkDomainForCache - проверка домена только для обогащения кеша
-func (e *CheckEngine) checkDomainForCache(ctx context.Context, domain string) (*DomainResult, error) {
-    start := time.Now()
+func NewCheckEngine(cfg *Config, cache *Cache, enrichers []Enricher) *CheckEngine {
 
-    // Пробуем кеш
-    if cached := e.Cache.get(domain); cached != nil {
-        return cached, nil
-    }
+	engine := &CheckEngine{
+		cfg:       cfg,
+		cache:     cache,
+		enrichers: enrichers,
+		jobQueue:  make(chan enrichmentJob, cfg.Engine.WorkerQueueSize),
+	}
 
-    // Запрашиваем Cloud API с увеличенным таймаутом
-    apiResult, err := e.apiClient.check(ctx, domain)
-    if err != nil {
-        // Используем Debug вместо Warn для фоновых ошибок
-        logDebug("Background API check failed",
-            "domain", domain,
-            "error", err,
-            "duration_ms", time.Since(start).Milliseconds())
-        return nil, err
-    }
+	for i := 0; i < cfg.Engine.WorkerCount; i++ {
+		engine.wg.Add(1)
+		go engine.worker()
+	}
 
-    // Создаем результат
-    result := e.createResultFromAPI(apiResult)
-
-    // Сохраняем в кеш
-    e.Cache.set(domain, result)
-
-    logDebug("Background API check completed",
-        "domain", domain,
-        "category", result.Category,
-        "duration_ms", time.Since(start).Milliseconds())
-
-    return result, nil
+	return engine
 }
 
-// checkDomain - основная проверка (используется если есть в кеше)
-func (e *CheckEngine) checkDomain(ctx context.Context, domain string) (*DomainResult, error) {
-    // В основном только проверяем кеш
-    if cached := e.Cache.get(domain); cached != nil {  // Используем e.Cache
-        e.metrics.incCacheHit()
-        return cached, nil
-    }
-
-    e.metrics.incCacheMiss()
-    
-    // Если нет в кеше, возвращаем разрешенный результат
-    return &DomainResult{
-        Domain:   domain,
-        Action:   "allow",
-        Category: 0,
-        TTL:      getTTLByCategory(0),
-        Source:   "cache_miss_fallback",
-        Timestamp: time.Now(),
-    }, nil
+func (e *CheckEngine) worker() {
+	defer e.wg.Done()
+	for job := range e.jobQueue {
+		for _, enricher := range e.enrichers {
+			_ = enricher.Enrich(job.ctx, job.domain, job.result)
+		}
+	}
 }
 
-func (e *CheckEngine) createResultFromAPI(apiResult *APIResponse) *DomainResult {
-    result := &DomainResult{
-        Domain:   apiResult.Domain,
-        Category: apiResult.Category,
-        TTL:      getTTLByCategory(apiResult.Category),
-        Source:   "cloud_api",
-        Timestamp: time.Now(),
-    }
+func (e *CheckEngine) CheckDomain(ctx context.Context, domain string) (*DomainResult, error) {
 
-    // Определяем действие по категории
-    if apiResult.Category == 0 || apiResult.Category == 9 {
-        result.Action = "allow"
-    } else {
-        result.Action = "block"
-        result.IP = getSinkholeIP(apiResult.Category)
-    }
+	if cached, ok := e.cache.Get(domain); ok {
+		incrementCacheHit()
+		return cached, nil
+	}
 
-    return result
+	val, err, _ := e.sf.Do(domain, func() (interface{}, error) {
+
+		result := &DomainResult{
+			Domain: domain,
+		}
+
+		err := e.resolveRealIP(ctx, result)
+		if err != nil {
+			return nil, err
+		}
+
+		select {
+		case e.jobQueue <- enrichmentJob{
+			ctx:    ctx,
+			domain: domain,
+			result: result,
+		}:
+		default:
+			// очередь переполнена — деградируем gracefully
+		}
+
+		e.applyTTLPolicy(result)
+		e.cache.Set(domain, result)
+
+		return result, nil
+	})
+
+	if err != nil {
+		e.cache.SetNegative(domain, 20*time.Second)
+		return nil, err
+	}
+
+	return val.(*DomainResult), nil
 }
 
-func (e *CheckEngine) getStats() *Stats {
-    return e.metrics.getStats()
+func (e *CheckEngine) resolveRealIP(ctx context.Context, result *DomainResult) error {
+
+	ips, err := netResolver.LookupIPAddr(ctx, result.Domain)
+	if err != nil {
+		return err
+	}
+
+	for _, ip := range ips {
+		if ip.IP.To4() != nil {
+			result.RealIP = ip.IP
+		} else {
+			result.RealIPv6 = ip.IP
+		}
+	}
+
+	if result.RealIP == nil && result.RealIPv6 == nil {
+		return errors.New("no ip resolved")
+	}
+
+	return nil
+}
+
+func (e *CheckEngine) applyTTLPolicy(result *DomainResult) {
+
+	ttl := result.TTL
+	if ttl == 0 {
+		ttl = e.cfg.TTL.Default
+	}
+
+	if ttl < e.cfg.TTL.Min {
+		ttl = e.cfg.TTL.Min
+	}
+	if ttl > e.cfg.TTL.Max {
+		ttl = e.cfg.TTL.Max
+	}
+
+	result.TTL = ttl
 }
