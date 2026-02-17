@@ -1,60 +1,86 @@
 package main
 
 import (
-	"log"
-	"net"
-	"os"
-	"os/signal"
-	"syscall"
+    "context"
+    "fmt"
+    "os"
+    "os/signal"
+    "syscall"
+    "time"
 )
 
-var netResolver *net.Resolver
-
 func main() {
+    // Загрузка конфигурации
+    if err := loadConfig(); err != nil {
+        fmt.Printf("❌ Failed to load config: %v\n", err)
+        os.Exit(1)
+    }
 
-	cfg, err := LoadConfig("config/config.yaml")
-	if err != nil {
-		log.Fatalf("config load error: %v", err)
-	}
+    cfg := getConfig()
 
-	InitLogger(cfg)
-	initMetrics()
+    // Инициализация логгера
+    initLogger(cfg.LogLevel)
 
-	// L1 cache (Ristretto)
-	cache := NewCache(cfg)
+    logInfo("🚀 Starting DNS Security Proxy",
+        "version", "1.0.0",
+        "dns_listen", cfg.DNSListen,
+        "http_listen", cfg.HTTPListen,
+        "sla_timeout", cfg.Timeouts.Total.String())
 
-	// Valkey client (L2 cache)
-	valkeyClient, err := NewValkeyClient(cfg)
-	if err != nil {
-		log.Fatalf("valkey connection error: %v", err)
-	}
+    // Инициализация метрик
+    initMetrics()
 
-	// Enrichers
-	enrichers := []Enricher{
-		NewCloudAPIEnricher(cfg),
-	}
+    // Инициализация кеша
+    cache := newCacheManager()
+    defer cache.shutdown()
 
-	engine := NewCheckEngine(cfg, cache, valkeyClient, enrichers)
+    // Инициализация Cloud API клиента
+    apiClient := newCloudAPIClient(&cfg.CloudAPI)
 
-	netResolver = &net.Resolver{
-		PreferGo: true,
-	}
+    // Инициализация движка проверок
+    engine := newCheckEngine(cache, apiClient)
 
-	// DNS server
-	dnsServer := NewDNSServer(engine, cfg)
-	go dnsServer.Start()
+    // Запуск DNS сервера (UDP и TCP)
+    dnsServer := newDNSServer(cfg.DNSListen, engine)
+    go func() {
+        logInfo("Starting DNS server", "address", cfg.DNSListen)
+        if err := dnsServer.start(); err != nil {
+            logError("DNS server failed", err)
+            os.Exit(1)
+        }
+    }()
 
-	// HTTP server (stats + metrics)
-	httpServer := NewHTTPServer(engine, cfg)
-	go httpServer.Start()
+    // Запуск HTTP сервера для метрик
+    httpServer := newHTTPServer(cfg.HTTPListen, engine)
+    go func() {
+        logInfo("Starting HTTP server", "address", cfg.HTTPListen)
+        if err := httpServer.start(); err != nil {
+            logError("HTTP server failed", err)
+        }
+    }()
 
-	LogInfo("system", "DNS Security Proxy started")
+    // Ожидание сигналов завершения
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// graceful shutdown
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+    logInfo("✅ Services started successfully")
+    logInfo("📊 Metrics: http://" + cfg.HTTPListen + "/metrics")
+    logInfo("❤️  Health: http://" + cfg.HTTPListen + "/health")
 
-	LogInfo("system", "Shutting down...")
-	engine.Shutdown()
+    select {
+    case sig := <-sigChan:
+        logInfo("🛑 Received signal, shutting down", "signal", sig.String())
+
+        // Graceful shutdown
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+
+        dnsServer.shutdown(ctx)
+        httpServer.shutdown(ctx)
+
+    case <-time.After(1 * time.Hour):
+        logInfo("Timeout reached")
+    }
+
+    logInfo("👋 Shutdown completed")
 }
