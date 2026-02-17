@@ -1,41 +1,23 @@
 package main
 
 import (
-	"time"
-
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
-	dnsRequests = prometheus.NewCounter(
+	requestsTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "dns_requests_total",
-		})
-
-	dnsLatency = prometheus.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "dns_latency_seconds",
-			Buckets: prometheus.DefBuckets,
-		})
-
-	cacheHits = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "dns_cache_hits_total",
-		})
+			Help: "Total DNS requests",
+		},
+	)
 )
 
 func initMetrics() {
-	prometheus.MustRegister(dnsRequests, dnsLatency, cacheHits)
+	prometheus.MustRegister(requestsTotal)
 }
 
-func incrementDNSCounter() {
-	dnsRequests.Inc()
-}
-
-func observeDNSLatency(d time.Duration) {
-	dnsLatency.Observe(d.Seconds())
-}
-
-func incrementCacheHit() {
-	cacheHits.Inc()
+func promHandler() http.Handler {
+	return promhttp.Handler()
 }
