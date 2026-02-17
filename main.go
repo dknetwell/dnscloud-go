@@ -3,7 +3,6 @@ package main
 import (
 	"log"
 	"net"
-	"os"
 
 	"github.com/miekg/dns"
 )
@@ -21,14 +20,12 @@ func main() {
 
 	cache := NewCache(cfg)
 
-	cloudEnricher := NewCloudAPIEnricher(cfg)
+	cloud := NewCloudAPIEnricher(cfg)
 
 	engine := NewCheckEngine(
 		cfg,
 		cache,
-		[]Enricher{
-			cloudEnricher,
-		},
+		[]Enricher{cloud},
 	)
 
 	netResolver = &net.Resolver{
@@ -44,12 +41,9 @@ func main() {
 		Net:  "udp",
 	}
 
-	log.Println("DNS Proxy started on :5353")
+	log.Println("DNS proxy started on :5353")
 
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
-
-	defer server.Shutdown()
-	os.Exit(0)
 }
