@@ -2,76 +2,61 @@ package main
 
 import (
 	"context"
-	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"dnscloud-go/config"
 )
 
 func main() {
-	cfg, err := config.Load()
+
+	cfg, err := LoadConfig("config/config.yaml")
 	if err != nil {
-		log.Fatalf("config load error: %v", err)
+		panic(err)
 	}
 
-	log.Println("DNS Security Proxy starting...")
+	InitLogger(cfg)
+	initMetrics()
 
-	// DNS сервер
-	go startDNSServer(cfg)
+	LogInfo("system", "DNS Security Proxy starting")
 
-	// HTTP сервер (health + metrics)
-	go startHTTPServer(cfg)
+	// Cache
+	cache := NewCache(cfg)
+
+	// Valkey
+	valkeyClient, err := NewValkeyClient(cfg)
+	if err != nil {
+		panic(err)
+	}
+
+	// Enrichers
+	cloudEnricher := NewCloudAPIEnricher(cfg)
+	enrichers := []Enricher{
+		cloudEnricher,
+	}
+
+	// Engine
+	engine := NewCheckEngine(cfg, cache, valkeyClient, enrichers)
+
+	// DNS server
+	dnsServer := NewDNSServer(engine, cfg)
+	dnsServer.Start()
+
+	// HTTP server
+	httpServer := NewHTTPServer(engine, cfg)
+	go httpServer.Start()
 
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
-	log.Println("Shutting down gracefully...")
-}
+	LogInfo("system", "Shutting down")
 
-func startDNSServer(cfg *config.Config) {
-	addr := cfg.Server.DNSListenAddr
+	engine.Shutdown()
 
-	ln, err := net.ListenPacket("udp", addr)
-	if err != nil {
-		log.Fatalf("failed to start DNS server: %v", err)
-	}
-	defer ln.Close()
-
-	log.Printf("DNS server started on %s\n", addr)
-
-	buf := make([]byte, 512)
-	for {
-		_, _, err := ln.ReadFrom(buf)
-		if err != nil {
-			log.Println("DNS read error:", err)
-			continue
-		}
-	}
-}
-
-func startHTTPServer(cfg *config.Config) {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
-
-	server := &http.Server{
-		Addr:    cfg.Server.HTTPListenAddr,
-		Handler: mux,
-	}
-
-	log.Printf("HTTP server started on %s\n", cfg.Server.HTTPListenAddr)
-
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("HTTP server error: %v", err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = http.DefaultServer.Shutdown(ctx)
 }
