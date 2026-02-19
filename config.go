@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -62,39 +63,47 @@ func LoadConfig() (*Config, error) {
 
 	cfg := &Config{}
 
-	// 1️⃣ YAML optional
+	// YAML optional
 	if path := os.Getenv("CONFIG_PATH"); path != "" {
 		if data, err := os.ReadFile(path); err == nil {
 			_ = yaml.Unmarshal(data, cfg)
 		}
 	}
 
-	// 2️⃣ ENV overrides (production-first)
+	// ===== DNS =====
 
-	// Logging
-	cfg.Logging.Level = getEnv("LOG_LEVEL", cfg.Logging.Level)
-	cfg.Logging.Syslog = getEnvBool("LOG_SYSLOG", cfg.Logging.Syslog)
-
-	// DNS
 	cfg.DNS.ListenUDP = getEnv("DNS_LISTEN_UDP", defaultStr(cfg.DNS.ListenUDP, ":53"))
 	cfg.DNS.ListenTCP = getEnv("DNS_LISTEN_TCP", defaultStr(cfg.DNS.ListenTCP, ":53"))
 	cfg.DNS.MaxPacketSize = getEnvInt("DNS_MAX_PACKET", defaultInt(cfg.DNS.MaxPacketSize, 1232))
 	cfg.DNS.SinkholeIPv4 = getEnv("DNS_SINKHOLE_IPV4", defaultStr(cfg.DNS.SinkholeIPv4, "0.0.0.0"))
 	cfg.DNS.SinkholeIPv6 = getEnv("DNS_SINKHOLE_IPV6", defaultStr(cfg.DNS.SinkholeIPv6, "::"))
 
-	// HTTP
+	// 🔥 Upstream override через ENV
+	if env := os.Getenv("DNS_UPSTREAMS"); env != "" {
+		cfg.DNS.Upstream = strings.Split(env, ",")
+	}
+
+	// 🔥 Fallback если ничего не задано
+	if len(cfg.DNS.Upstream) == 0 {
+		cfg.DNS.Upstream = []string{
+			"8.8.8.8:53",
+			"1.1.1.1:53",
+		}
+	}
+
+	// ===== HTTP =====
 	cfg.HTTP.Listen = getEnv("HTTP_LISTEN", defaultStr(cfg.HTTP.Listen, ":8080"))
 
-	// Valkey
+	// ===== Valkey =====
 	cfg.Valkey.Address = getEnv("VALKEY_ADDR", defaultStr(cfg.Valkey.Address, "valkey:6379"))
 	cfg.Valkey.Password = getEnv("VALKEY_PASSWORD", cfg.Valkey.Password)
 	cfg.Valkey.DB = getEnvInt("VALKEY_DB", cfg.Valkey.DB)
 
-	// Engine
+	// ===== Engine =====
 	cfg.Engine.WorkerCount = getEnvInt("ENGINE_WORKERS", defaultInt(cfg.Engine.WorkerCount, 100))
 	cfg.Engine.WorkerQueueSize = getEnvInt("ENGINE_QUEUE", defaultInt(cfg.Engine.WorkerQueueSize, 1000))
 
-	// CloudAPI
+	// ===== CloudAPI =====
 	cfg.CloudAPI.Endpoint = getEnv("CLOUDAPI_ENDPOINT", cfg.CloudAPI.Endpoint)
 	cfg.CloudAPI.APIKey = getEnv("CLOUDAPI_APIKEY", cfg.CloudAPI.APIKey)
 	cfg.CloudAPI.TimeoutSeconds = getEnvInt("CLOUDAPI_TIMEOUT", defaultInt(cfg.CloudAPI.TimeoutSeconds, 2))
@@ -102,77 +111,13 @@ func LoadConfig() (*Config, error) {
 	cfg.CloudAPI.Burst = getEnvInt("CLOUDAPI_BURST", defaultInt(cfg.CloudAPI.Burst, 100))
 	cfg.CloudAPI.InsecureSkipVerify = getEnvBool("CLOUDAPI_INSECURE", cfg.CloudAPI.InsecureSkipVerify)
 
-	// TTL
+	// ===== TTL =====
 	cfg.TTL.Default = getEnvInt("TTL_DEFAULT", defaultInt(cfg.TTL.Default, 300))
 	cfg.TTL.Min = getEnvInt("TTL_MIN", defaultInt(cfg.TTL.Min, 60))
 	cfg.TTL.Max = getEnvInt("TTL_MAX", defaultInt(cfg.TTL.Max, 86400))
 
-	// Cache
+	// ===== Cache =====
 	cfg.Cache.MaxCost = getEnvInt64("CACHE_MAX_COST", defaultInt64(cfg.Cache.MaxCost, 1<<30))
 
 	return cfg, nil
-}
-
-func getEnv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func getEnvInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return def
-}
-
-func getEnvInt64(key string, def int64) int64 {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
-			return i
-		}
-	}
-	return def
-}
-
-func getEnvFloat(key string, def float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return def
-}
-
-func getEnvBool(key string, def bool) bool {
-	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
-	}
-	return def
-}
-
-func defaultStr(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
-}
-
-func defaultInt(v, def int) int {
-	if v == 0 {
-		return def
-	}
-	return v
-}
-
-func defaultInt64(v, def int64) int64 {
-	if v == 0 {
-		return def
-	}
-	return v
 }
