@@ -28,7 +28,7 @@ func (s *DNSServer) Start() {
 	udpServer := &dns.Server{
 		Addr:         s.cfg.DNS.ListenUDP,
 		Net:          "udp",
-		UDPSize:      uint16(s.cfg.DNS.MaxPacketSize),
+		UDPSize:      s.cfg.DNS.MaxPacketSize,
 		ReadTimeout:  2 * time.Second,
 		WriteTimeout: 2 * time.Second,
 	}
