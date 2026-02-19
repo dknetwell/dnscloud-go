@@ -4,6 +4,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"fmt"
 
 	"github.com/miekg/dns"
 )
@@ -95,7 +96,7 @@ func (s *DNSServer) forwardToUpstream(r *dns.Msg) (*dns.Msg, error) {
 		}
 	}
 
-	return nil, dns.ErrServ
+	return nil, fmt.Errorf("all upstreams failed")
 }
 
 func (s *DNSServer) writeSinkhole(m *dns.Msg, q dns.Question) {
