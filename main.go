@@ -12,7 +12,7 @@ func main() {
 
 	cfg, err := LoadConfig()
 	if err != nil {
-		LogFatal("system", "config load failed", err)
+		LogFatal("failed to load config", err)
 	}
 
 	InitLogger(cfg)
