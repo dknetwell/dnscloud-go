@@ -27,7 +27,7 @@ services:
       VALKEY_ADDR: valkey:6379
       DNS_LISTEN_UDP: ":53"
       DNS_LISTEN_TCP: ":53"
-      WORKERS: "200"
+      ENGINE_WORKERS: "200"
     ports:
       - "53:53/udp"
       - "53:53/tcp"
@@ -50,10 +50,13 @@ services:
         ipv4_address: 172.28.0.30
     volumes:
       - ./Corefile:/Corefile
+      - ./certs:/certs:ro      # ← ВАЖНО: добавили сертификаты
     command: -conf /Corefile
     ports:
       - "1053:53/udp"
       - "1053:53/tcp"
+      - "853:853/tcp"
+      - "443:443/tcp"
 
 networks:
   dnsnet:
