@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 )
@@ -8,10 +9,14 @@ import (
 type HTTPServer struct {
 	engine *CheckEngine
 	cfg    *Config
+	server *http.Server
 }
 
 func NewHTTPServer(engine *CheckEngine, cfg *Config) *HTTPServer {
-	return &HTTPServer{engine: engine, cfg: cfg}
+	return &HTTPServer{
+		engine: engine,
+		cfg:    cfg,
+	}
 }
 
 func (s *HTTPServer) Start() {
@@ -26,9 +31,22 @@ func (s *HTTPServer) Start() {
 	mux.HandleFunc("/stats", s.handleStats)
 	mux.Handle("/metrics", promHandler())
 
+	s.server = &http.Server{
+		Addr:    s.cfg.HTTP.Listen,
+		Handler: mux,
+	}
+
 	LogInfo("http", "HTTP server started on "+s.cfg.HTTP.Listen)
 
-	http.ListenAndServe(s.cfg.HTTP.Listen, mux)
+	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		LogError("http", err.Error())
+	}
+}
+
+func (s *HTTPServer) Shutdown(ctx context.Context) {
+	if s.server != nil {
+		_ = s.server.Shutdown(ctx)
+	}
 }
 
 func (s *HTTPServer) handleStats(w http.ResponseWriter, r *http.Request) {
