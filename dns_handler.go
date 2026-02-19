@@ -1,23 +1,26 @@
 package main
 
 import (
-	"context"
-	"net"
 	"strings"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
-var netResolver = &net.Resolver{}
-
 type DNSServer struct {
 	engine *CheckEngine
 	cfg    *Config
+	client *dns.Client
 }
 
 func NewDNSServer(engine *CheckEngine, cfg *Config) *DNSServer {
-	return &DNSServer{engine: engine, cfg: cfg}
+	return &DNSServer{
+		engine: engine,
+		cfg:    cfg,
+		client: &dns.Client{
+			Timeout: 2 * time.Second,
+		},
+	}
 }
 
 func (s *DNSServer) Start() {
@@ -47,10 +50,6 @@ func (s *DNSServer) Start() {
 
 func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 
-	if r.Len() > s.cfg.DNS.MaxPacketSize {
-		return
-	}
-
 	if len(r.Question) == 0 {
 		return
 	}
@@ -62,17 +61,40 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	result, _ := s.engine.CheckDomain(domain)
 
-	m := new(dns.Msg)
-	m.SetReply(r)
-	m.Authoritative = true
-
 	if result.Blocked {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Authoritative = true
 		s.writeSinkhole(m, q)
-	} else {
-		s.resolveReal(m, q, result)
+		_ = w.WriteMsg(m)
+		return
 	}
 
-	_ = w.WriteMsg(m)
+	// 🔥 Forward to upstream
+	resp, err := s.forwardToUpstream(r)
+	if err != nil {
+		LogError("dns", "upstream failed", err)
+		m := new(dns.Msg)
+		m.SetRcode(r, dns.RcodeServerFailure)
+		_ = w.WriteMsg(m)
+		return
+	}
+
+	resp.Authoritative = false
+	_ = w.WriteMsg(resp)
+}
+
+func (s *DNSServer) forwardToUpstream(r *dns.Msg) (*dns.Msg, error) {
+
+	for _, upstream := range s.cfg.DNS.Upstream {
+
+		resp, _, err := s.client.Exchange(r, upstream)
+		if err == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
+			return resp, nil
+		}
+	}
+
+	return nil, dns.ErrServ
 }
 
 func (s *DNSServer) writeSinkhole(m *dns.Msg, q dns.Question) {
@@ -100,42 +122,5 @@ func (s *DNSServer) writeSinkhole(m *dns.Msg, q dns.Question) {
 			},
 			AAAA: net.ParseIP(s.cfg.DNS.SinkholeIPv6),
 		})
-	}
-}
-
-func (s *DNSServer) resolveReal(m *dns.Msg, q dns.Question, result *DomainResult) {
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	switch q.Qtype {
-
-	case dns.TypeA:
-		ips, _ := netResolver.LookupIP(ctx, "ip4", result.Domain)
-		for _, ip := range ips {
-			m.Answer = append(m.Answer, &dns.A{
-				Hdr: dns.RR_Header{
-					Name:   q.Name,
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    uint32(result.TTL),
-				},
-				A: ip,
-			})
-		}
-
-	case dns.TypeAAAA:
-		ips, _ := netResolver.LookupIP(ctx, "ip6", result.Domain)
-		for _, ip := range ips {
-			m.Answer = append(m.Answer, &dns.AAAA{
-				Hdr: dns.RR_Header{
-					Name:   q.Name,
-					Rrtype: dns.TypeAAAA,
-					Class:  dns.ClassINET,
-					Ttl:    uint32(result.TTL),
-				},
-				AAAA: ip,
-			})
-		}
 	}
 }
