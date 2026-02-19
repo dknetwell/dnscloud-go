@@ -18,19 +18,31 @@ type Config struct {
 		Listen string
 	}
 
+	Cache struct {
+		MaxCost     int64
+		NumCounters int64
+		BufferItems int64
+	}
+
 	Valkey struct {
 		Address  string
 		Password string
 		DB       int
 	}
 
-	CloudAPI struct {
-		URL     string
-		Timeout int
-		RPS     int
+	Engine struct {
+		WorkerCount int
+		QueueSize   int
 	}
 
-	Workers int
+	CloudAPI struct {
+		Endpoint           string
+		APIKey             string
+		TimeoutSeconds     int
+		RateLimit          int
+		Burst              int
+		InsecureSkipVerify bool
+	}
 }
 
 func LoadConfig() (*Config, error) {
@@ -47,17 +59,27 @@ func LoadConfig() (*Config, error) {
 	// HTTP
 	cfg.HTTP.Listen = getEnv("HTTP_LISTEN", ":8080")
 
+	// Cache
+	cfg.Cache.MaxCost = getEnvInt64("CACHE_MAX_COST", 1<<30)
+	cfg.Cache.NumCounters = getEnvInt64("CACHE_NUM_COUNTERS", 1e7)
+	cfg.Cache.BufferItems = getEnvInt64("CACHE_BUFFER_ITEMS", 64)
+
 	// Valkey
 	cfg.Valkey.Address = getEnv("VALKEY_ADDR", "valkey:6379")
 	cfg.Valkey.Password = os.Getenv("VALKEY_PASSWORD")
 	cfg.Valkey.DB = getEnvInt("VALKEY_DB", 0)
 
-	// CloudAPI
-	cfg.CloudAPI.URL = getEnv("CLOUDAPI_URL", "")
-	cfg.CloudAPI.Timeout = getEnvInt("CLOUDAPI_TIMEOUT_MS", 2000)
-	cfg.CloudAPI.RPS = getEnvInt("CLOUDAPI_RPS", 500)
+	// Engine
+	cfg.Engine.WorkerCount = getEnvInt("ENGINE_WORKERS", 100)
+	cfg.Engine.QueueSize = getEnvInt("ENGINE_QUEUE", 1000)
 
-	cfg.Workers = getEnvInt("WORKERS", 100)
+	// CloudAPI
+	cfg.CloudAPI.Endpoint = getEnv("CLOUDAPI_ENDPOINT", "")
+	cfg.CloudAPI.APIKey = os.Getenv("CLOUDAPI_APIKEY")
+	cfg.CloudAPI.TimeoutSeconds = getEnvInt("CLOUDAPI_TIMEOUT", 2)
+	cfg.CloudAPI.RateLimit = getEnvInt("CLOUDAPI_RPS", 500)
+	cfg.CloudAPI.Burst = getEnvInt("CLOUDAPI_BURST", 100)
+	cfg.CloudAPI.InsecureSkipVerify = getEnvBool("CLOUDAPI_INSECURE", false)
 
 	return cfg, nil
 }
@@ -73,6 +95,24 @@ func getEnvInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
+		}
+	}
+	return def
+}
+
+func getEnvInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return i
+		}
+	}
+	return def
+}
+
+func getEnvBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return def
