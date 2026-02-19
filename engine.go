@@ -123,8 +123,8 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 	}
 
 	res.Timestamp = time.Now()
-	atomic.AddInt64(&e.stats.AvgLatency,
-		int64(time.Since(start)))
+	atomic.AddInt64(&e.stats.AvgLatencyNs,
+        time.Since(start).Nanoseconds())
 
 	return res, nil
 }
