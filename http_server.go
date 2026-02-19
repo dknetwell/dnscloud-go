@@ -11,25 +11,28 @@ type HTTPServer struct {
 }
 
 func NewHTTPServer(engine *CheckEngine, cfg *Config) *HTTPServer {
-	return &HTTPServer{
-		engine: engine,
-		cfg:    cfg,
-	}
+	return &HTTPServer{engine: engine, cfg: cfg}
 }
 
 func (s *HTTPServer) Start() {
 
-	http.HandleFunc("/stats", s.handleStats)
-	http.Handle("/metrics", promHandler())
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	mux.HandleFunc("/stats", s.handleStats)
+	mux.Handle("/metrics", promHandler())
 
 	LogInfo("http", "HTTP server started on "+s.cfg.HTTP.Listen)
-	http.ListenAndServe(s.cfg.HTTP.Listen, nil)
+
+	http.ListenAndServe(s.cfg.HTTP.Listen, mux)
 }
 
 func (s *HTTPServer) handleStats(w http.ResponseWriter, r *http.Request) {
-
 	stats := s.engine.GetStats()
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
 }
