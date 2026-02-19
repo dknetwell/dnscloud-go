@@ -1,60 +1,77 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"dnscloud-go/config"
 )
 
-var netResolver *net.Resolver
-
 func main() {
-
-	cfg, err := LoadConfig("config/config.yaml")
+	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config load error: %v", err)
 	}
 
-	InitLogger(cfg)
-	initMetrics()
+	log.Println("DNS Security Proxy starting...")
 
-	// L1 cache (Ristretto)
-	cache := NewCache(cfg)
+	// DNS сервер
+	go startDNSServer(cfg)
 
-	// Valkey client (L2 cache)
-	valkeyClient, err := NewValkeyClient(cfg)
-	if err != nil {
-		log.Fatalf("valkey connection error: %v", err)
-	}
+	// HTTP сервер (health + metrics)
+	go startHTTPServer(cfg)
 
-	// Enrichers
-	enrichers := []Enricher{
-		NewCloudAPIEnricher(cfg),
-	}
-
-	engine := NewCheckEngine(cfg, cache, valkeyClient, enrichers)
-
-	netResolver = &net.Resolver{
-		PreferGo: true,
-	}
-
-	// DNS server
-	dnsServer := NewDNSServer(engine, cfg)
-	go dnsServer.Start()
-
-	// HTTP server (stats + metrics)
-	httpServer := NewHTTPServer(engine, cfg)
-	go httpServer.Start()
-
-	LogInfo("system", "DNS Security Proxy started")
-
-	// graceful shutdown
+	// Graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
-	LogInfo("system", "Shutting down...")
-	engine.Shutdown()
+	log.Println("Shutting down gracefully...")
+}
+
+func startDNSServer(cfg *config.Config) {
+	addr := cfg.Server.DNSListenAddr
+
+	ln, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		log.Fatalf("failed to start DNS server: %v", err)
+	}
+	defer ln.Close()
+
+	log.Printf("DNS server started on %s\n", addr)
+
+	buf := make([]byte, 512)
+	for {
+		_, _, err := ln.ReadFrom(buf)
+		if err != nil {
+			log.Println("DNS read error:", err)
+			continue
+		}
+	}
+}
+
+func startHTTPServer(cfg *config.Config) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	server := &http.Server{
+		Addr:    cfg.Server.HTTPListenAddr,
+		Handler: mux,
+	}
+
+	log.Printf("HTTP server started on %s\n", cfg.Server.HTTPListenAddr)
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("HTTP server error: %v", err)
+	}
 }
