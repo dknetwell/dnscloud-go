@@ -1,42 +1,32 @@
-# Многостадийная сборка
+# ===== BUILD STAGE =====
 FROM golang:1.24.13-alpine AS builder
 
 WORKDIR /app
 
-# Устанавливаем зависимости для сборки
 RUN apk add --no-cache git ca-certificates
 
-# Копируем зависимости
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Копируем исходный код
 COPY *.go ./
 
-# Собираем приложение
-RUN CGO_ENABLED=0 GOOS=linux go build -o dns-proxy .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dns-proxy .
 
-# Финальный образ
+# ===== RUNTIME STAGE =====
 FROM alpine:3.18
-
-# Устанавливаем wget для health checks и libcap для NET_BIND_SERVICE
-RUN apk add --no-cache ca-certificates tzdata libcap wget && \
-    addgroup -g 1000 dns && \
-    adduser -D -u 1000 -G dns dns
 
 WORKDIR /app
 
-# Копируем бинарник
-COPY --from=builder /app/dns-proxy /app/
+RUN apk add --no-cache ca-certificates tzdata wget \
+    && addgroup -g 1000 dns \
+    && adduser -D -u 1000 -G dns dns
 
-# Копируем конфигурацию
-COPY config /app/config/
+COPY --from=builder /app/dns-proxy /app/dns-proxy
 
-# Настраиваем пользователя
 USER dns
 
-# Порты
-EXPOSE 5353 8054
+EXPOSE 53/udp
+EXPOSE 53/tcp
+EXPOSE 8080
 
-# Запуск
-CMD ["/app/dns-proxy"]
+ENTRYPOINT ["/app/dns-proxy"]
