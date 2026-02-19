@@ -1,41 +1,126 @@
-logging:
-  level: info
-  syslog: false
+package config
 
-dns:
-  listen_udp: ":53"
-  listen_tcp: ":53"
-  upstream:
-    - "8.8.8.8:53"
-    - "1.1.1.1:53"
-  sinkhole_ipv4: "0.0.0.0"
-  sinkhole_ipv6: "::"
-  max_packet_size: 1232
+import (
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"time"
 
-cloud_api:
-  endpoint: "https://api.example.com/check"
-  api_key: "CHANGE_ME"
-  insecure_skip_verify: false
-  rate_limit: 50
-  burst: 20
-  timeout_seconds: 2
+	"gopkg.in/yaml.v3"
+)
 
-ttl:
-  default: 60
-  min: 30
-  max: 3600
+type Config struct {
+	Server struct {
+		DNSListenAddr  string `yaml:"dns_listen_addr"`
+		HTTPListenAddr string `yaml:"http_listen_addr"`
+	} `yaml:"server"`
 
-cache:
-  max_cost: 10000000
+	Valkey struct {
+		Address string        `yaml:"address"`
+		TTL     time.Duration `yaml:"ttl"`
+	} `yaml:"valkey"`
 
-valkey:
-  address: "valkey:6379"
-  password: ""
-  db: 0
+	CloudAPI struct {
+		URL     string        `yaml:"url"`
+		Key     string        `yaml:"key"`
+		Timeout time.Duration `yaml:"timeout"`
+		RPS     int           `yaml:"rps"`
+		Workers int           `yaml:"workers"`
+	} `yaml:"cloud_api"`
 
-engine:
-  worker_count: 50
-  worker_queue_size: 10000
+	Log struct {
+		Level  string `yaml:"level"`
+		Format string `yaml:"format"`
+	} `yaml:"log"`
+}
 
-http:
-  listen: ":8080"
+func Load() (*Config, error) {
+	cfg := defaultConfig()
+
+	// 1️⃣ Пытаемся загрузить YAML
+	if _, err := os.Stat("config/config.yaml"); err == nil {
+		file, err := os.ReadFile("config/config.yaml")
+		if err != nil {
+			return nil, fmt.Errorf("failed to read config.yaml: %w", err)
+		}
+
+		if err := yaml.Unmarshal(file, cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse config.yaml: %w", err)
+		}
+
+		log.Println("configuration loaded from YAML")
+	} else {
+		log.Println("config.yaml not found, using ENV/defaults")
+	}
+
+	// 2️⃣ Перезаписываем ENV если заданы
+	overrideFromEnv(cfg)
+
+	return cfg, nil
+}
+
+func defaultConfig() *Config {
+	cfg := &Config{}
+
+	cfg.Server.DNSListenAddr = ":53"
+	cfg.Server.HTTPListenAddr = ":8080"
+
+	cfg.Valkey.Address = "valkey:6379"
+	cfg.Valkey.TTL = 300 * time.Second
+
+	cfg.CloudAPI.Timeout = 5 * time.Second
+	cfg.CloudAPI.RPS = 100
+	cfg.CloudAPI.Workers = 50
+
+	cfg.Log.Level = "info"
+	cfg.Log.Format = "json"
+
+	return cfg
+}
+
+func overrideFromEnv(cfg *Config) {
+	if v := os.Getenv("DNS_LISTEN_ADDR"); v != "" {
+		cfg.Server.DNSListenAddr = v
+	}
+	if v := os.Getenv("HTTP_LISTEN_ADDR"); v != "" {
+		cfg.Server.HTTPListenAddr = v
+	}
+	if v := os.Getenv("VALKEY_ADDR"); v != "" {
+		cfg.Valkey.Address = v
+	}
+	if v := os.Getenv("CACHE_TTL"); v != "" {
+		if ttl, err := strconv.Atoi(v); err == nil {
+			cfg.Valkey.TTL = time.Duration(ttl) * time.Second
+		}
+	}
+
+	if v := os.Getenv("CLOUD_API_URL"); v != "" {
+		cfg.CloudAPI.URL = v
+	}
+	if v := os.Getenv("CLOUD_API_KEY"); v != "" {
+		cfg.CloudAPI.Key = v
+	}
+	if v := os.Getenv("CLOUD_API_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.CloudAPI.Timeout = d
+		}
+	}
+	if v := os.Getenv("CLOUD_API_RPS"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			cfg.CloudAPI.RPS = i
+		}
+	}
+	if v := os.Getenv("CLOUD_API_WORKERS"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			cfg.CloudAPI.Workers = i
+		}
+	}
+
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		cfg.Log.Level = v
+	}
+	if v := os.Getenv("LOG_FORMAT"); v != "" {
+		cfg.Log.Format = v
+	}
+}
