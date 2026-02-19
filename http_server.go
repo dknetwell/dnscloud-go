@@ -38,9 +38,9 @@ func (s *HTTPServer) Start() {
 
 	LogInfo("http", "HTTP server started on "+s.cfg.HTTP.Listen)
 
-	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		LogError("http", err.Error())
-	}
+    if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	    LogError("http", "HTTP server failed", err)
+    }
 }
 
 func (s *HTTPServer) Shutdown(ctx context.Context) {
