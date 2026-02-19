@@ -1,51 +1,59 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
-	"log/syslog"
 	"os"
-	"time"
+	"strings"
 )
 
-var logger *log.Logger
+var logLevel = "info"
 
 func InitLogger(cfg *Config) {
+	logLevel = strings.ToLower(cfg.Logging.Level)
+	log.SetOutput(os.Stdout)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+}
 
-	if cfg.Logging.Syslog {
-		writer, err := syslog.New(syslog.LOG_INFO|syslog.LOG_LOCAL0, "dns-proxy")
-		if err == nil {
-			logger = log.New(writer, "", 0)
-			return
+func shouldLog(level string) bool {
+	order := map[string]int{
+		"debug": 0,
+		"info":  1,
+		"warn":  2,
+		"error": 3,
+		"fatal": 4,
+	}
+	return order[level] >= order[logLevel]
+}
+
+func LogDebug(msg string) {
+	if shouldLog("debug") {
+		log.Println("[DEBUG]", msg)
+	}
+}
+
+func LogInfo(msg string) {
+	if shouldLog("info") {
+		log.Println("[INFO]", msg)
+	}
+}
+
+func LogWarn(msg string) {
+	if shouldLog("warn") {
+		log.Println("[WARN]", msg)
+	}
+}
+
+func LogError(msg string, err error) {
+	if shouldLog("error") {
+		if err != nil {
+			log.Println("[ERROR]", msg, err)
+		} else {
+			log.Println("[ERROR]", msg)
 		}
 	}
-
-	logger = log.New(os.Stdout, "", 0)
 }
 
-func logJSON(level, component, message string, fields map[string]interface{}) {
-
-	entry := map[string]interface{}{
-		"time":      time.Now().UTC(),
-		"level":     level,
-		"component": component,
-		"message":   message,
-	}
-
-	for k, v := range fields {
-		entry[k] = v
-	}
-
-	data, _ := json.Marshal(entry)
-	logger.Println(string(data))
-}
-
-func LogInfo(component, message string) {
-	logJSON("info", component, message, nil)
-}
-
-func LogError(component, message string, err error) {
-	logJSON("error", component, message, map[string]interface{}{
-		"error": err.Error(),
-	})
+func LogFatal(msg string, err error) {
+	log.Println("[FATAL]", msg, err)
+	os.Exit(1)
 }
