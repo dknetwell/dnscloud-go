@@ -1,7 +1,6 @@
 package main
 
 import (
-	"net"
 	"time"
 )
 
@@ -13,17 +12,15 @@ type DomainResult struct {
 	Source    string    `json:"source"`
 	Timestamp time.Time `json:"timestamp"`
 
-	Blocked  bool   `json:"blocked"`
-	RealIP   net.IP `json:"-"`
-	RealIPv6 net.IP `json:"-"`
-	Negative bool   `json:"-"`
+	Blocked  bool `json:"blocked"`
+	Negative bool `json:"-"`
 }
 
 type Stats struct {
-	TotalRequests   int64         `json:"total_requests"`
-	CacheHits       int64         `json:"cache_hits"`
-	CacheMisses     int64         `json:"cache_misses"`
-	APICalls        int64         `json:"api_calls"`
-	EnrichmentQueue int           `json:"enrichment_queue"`
-	AvgLatencyNs    int64         `json:"avg_latency_ns"`
+	TotalRequests   int64 `json:"total_requests"`
+	CacheHits       int64 `json:"cache_hits"`
+	CacheMisses     int64 `json:"cache_misses"`
+	APICalls        int64 `json:"api_calls"`
+	EnrichmentQueue int   `json:"enrichment_queue"`
+	AvgLatencyNs    int64 `json:"avg_latency_ns"`
 }
