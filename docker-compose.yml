@@ -4,16 +4,9 @@ services:
     image: valkey/valkey:7.2.5-alpine
     container_name: valkey
     restart: unless-stopped
-    command: >
-      valkey-server
-      --appendonly yes
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-    volumes:
-      - valkey-data:/data
     networks:
       dnsnet:
-        ipv4_address: 172.28.0.2
+        ipv4_address: 172.28.0.10
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -21,42 +14,24 @@ services:
       retries: 5
 
   dns-proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: dns-proxy
     restart: unless-stopped
     depends_on:
       valkey:
         condition: service_healthy
-    environment:
-      # ==== Cloud API ====
-      CLOUD_API_URL: "https://api.example.com"
-      CLOUD_API_KEY: "CHANGE_ME"
-      CLOUD_API_TIMEOUT: "5s"
-      CLOUD_API_RPS: "100"
-      CLOUD_API_WORKERS: "50"
-
-      # ==== Cache ====
-      VALKEY_ADDR: "valkey:6379"
-      CACHE_TTL: "300"
-
-      # ==== Server ====
-      DNS_LISTEN_ADDR: ":53"
-      HTTP_LISTEN_ADDR: ":8080"
-
-      # ==== Logging ====
-      LOG_LEVEL: "info"
-      LOG_FORMAT: "json"
-
-    expose:
-      - "53"
-      - "8080"
-
     networks:
       dnsnet:
-        ipv4_address: 172.28.0.10
-
+        ipv4_address: 172.28.0.20
+    environment:
+      VALKEY_ADDR: valkey:6379
+      DNS_LISTEN_UDP: ":53"
+      DNS_LISTEN_TCP: ":53"
+      WORKERS: "200"
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "8080:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 5s
@@ -70,25 +45,19 @@ services:
     depends_on:
       dns-proxy:
         condition: service_healthy
-    command: -conf /etc/coredns/Corefile
-    volumes:
-      - ./Corefile:/etc/coredns/Corefile
-      - ./certs:/certs
-    ports:
-      - "53:53/udp"
-      - "53:53/tcp"
-      - "853:853"
-      - "443:443"
     networks:
       dnsnet:
-        ipv4_address: 172.28.0.11
+        ipv4_address: 172.28.0.30
+    volumes:
+      - ./Corefile:/Corefile
+    command: -conf /Corefile
+    ports:
+      - "1053:53/udp"
+      - "1053:53/tcp"
 
 networks:
   dnsnet:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.28.0.0/24
-
-volumes:
-  valkey-data:
+        - subnet: 172.28.0.0/16
