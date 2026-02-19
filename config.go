@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
