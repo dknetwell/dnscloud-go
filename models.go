@@ -25,5 +25,5 @@ type Stats struct {
 	CacheMisses     int64         `json:"cache_misses"`
 	APICalls        int64         `json:"api_calls"`
 	EnrichmentQueue int           `json:"enrichment_queue"`
-	AvgLatency      time.Duration `json:"avg_latency"`
+	AvgLatencyNs    int64         `json:"avg_latency_ns"`
 }
