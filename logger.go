@@ -25,35 +25,35 @@ func shouldLog(level string) bool {
 	return order[level] >= order[logLevel]
 }
 
-func LogDebug(msg string) {
+func LogDebug(component, msg string) {
 	if shouldLog("debug") {
-		log.Println("[DEBUG]", msg)
+		log.Println("[DEBUG]", "["+component+"]", msg)
 	}
 }
 
-func LogInfo(msg string) {
+func LogInfo(component, msg string) {
 	if shouldLog("info") {
-		log.Println("[INFO]", msg)
+		log.Println("[INFO]", "["+component+"]", msg)
 	}
 }
 
-func LogWarn(msg string) {
+func LogWarn(component, msg string) {
 	if shouldLog("warn") {
-		log.Println("[WARN]", msg)
+		log.Println("[WARN]", "["+component+"]", msg)
 	}
 }
 
-func LogError(msg string, err error) {
+func LogError(component, msg string, err error) {
 	if shouldLog("error") {
 		if err != nil {
-			log.Println("[ERROR]", msg, err)
+			log.Println("[ERROR]", "["+component+"]", msg, err)
 		} else {
-			log.Println("[ERROR]", msg)
+			log.Println("[ERROR]", "["+component+"]", msg)
 		}
 	}
 }
 
-func LogFatal(msg string, err error) {
-	log.Println("[FATAL]", msg, err)
+func LogFatal(component, msg string, err error) {
+	log.Println("[FATAL]", "["+component+"]", msg, err)
 	os.Exit(1)
 }
