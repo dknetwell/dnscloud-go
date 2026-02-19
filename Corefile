@@ -1,76 +1,19 @@
-# DNS Security Proxy
-# Все протоколы → DNS Proxy через DNS-over-TCP
-
 .:53 {
-    # ВСЕ запросы форвардим в ваше приложение
-    forward . 172.20.0.3:5353 {
-        max_concurrent 10000
-        expire 30s
-        health_check 10s
-        policy sequential
-        prefer_udp
-    }
-    
-    # Кеширование
-    cache {
-        success 10000 3600 300
-        denial 10000 3600 300
-        prefetch 1000 10m 80%
-    }
-    
-    # Логирование
-    log
-    
-    # Обработка ошибок
+    forward . dns-proxy:53
     errors
-    
-    # Метрики Prometheus
-    prometheus :9091
-    
-    # Health check
-    health :8080
-    
-    # Безопасность
-    bind 0.0.0.0
-    bufsize 1232
+    log
 }
 
-# DNS-over-TLS (DoT)
 tls://.:853 {
-    forward . 172.20.0.3:5353 {
-        max_concurrent 10000
-        expire 30s
-        health_check 10s
-    }
-    
-    cache {
-        success 10000 3600 300
-        denial 10000 3600 300
-    }
-    
     tls /certs/server.crt /certs/server.key
-    log
+    forward . dns-proxy:53
     errors
-    prometheus :9091
-    bind 0.0.0.0
+    log
 }
 
-# DNS-over-HTTPS (DoH)
 https://.:443 {
-    forward . 172.20.0.3:5353 {
-        max_concurrent 10000
-        expire 30s
-        health_check 10s
-    }
-    
-    cache {
-        success 10000 3600 300
-        denial 10000 3600 300
-    }
-    
     tls /certs/server.crt /certs/server.key
-    log
+    forward . dns-proxy:53
     errors
-    prometheus :9091
-    bind 0.0.0.0
+    log
 }
