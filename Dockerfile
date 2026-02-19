@@ -5,10 +5,11 @@ WORKDIR /app
 
 RUN apk add --no-cache git ca-certificates
 
-COPY go.mod go.sum ./
-RUN go mod download
+# Копируем весь проект сразу
+COPY . .
 
-COPY *.go ./
+# Если go.sum нет — создастся автоматически
+RUN go mod tidy
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dns-proxy .
 
