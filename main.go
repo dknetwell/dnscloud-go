@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -41,7 +40,7 @@ func main() {
 
 	// DNS server
 	dnsServer := NewDNSServer(engine, cfg)
-	dnsServer.Start()
+	go dnsServer.Start()
 
 	// HTTP server
 	httpServer := NewHTTPServer(engine, cfg)
@@ -58,5 +57,8 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = http.DefaultServer.Shutdown(ctx)
+
+	httpServer.Shutdown(ctx)
+
+	LogInfo("system", "Shutdown complete")
 }
