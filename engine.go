@@ -130,7 +130,15 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 }
 
 func (e *CheckEngine) GetStats() Stats {
+
 	s := e.stats
 	s.EnrichmentQueue = len(e.jobs)
+
+	total := atomic.LoadInt64(&s.TotalRequests)
+	if total > 0 {
+		avg := atomic.LoadInt64(&s.AvgLatencyNs) / total
+		s.AvgLatencyNs = avg
+	}
+
 	return s
 }
