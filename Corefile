@@ -1,19 +1,15 @@
 .:53 {
-    forward . dns-proxy
+    forward . 172.28.0.10
     errors
     log
 }
 
 tls://.:853 {
     tls /certs/server.crt /certs/server.key
-    forward . dns-proxy
-    errors
-    log
+    forward . 172.28.0.10
 }
 
 https://.:443 {
     tls /certs/server.crt /certs/server.key
-    forward . dns-proxy
-    errors
-    log
+    forward . 172.28.0.10
 }
