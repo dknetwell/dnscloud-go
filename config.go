@@ -2,72 +2,78 @@ package main
 
 import (
 	"os"
-
-	"gopkg.in/yaml.v3"
+	"strconv"
 )
 
 type Config struct {
-
-	Logging struct {
-		Level  string `yaml:"level"`
-		Syslog bool   `yaml:"syslog"`
-	} `yaml:"logging"`
-
 	DNS struct {
-		ListenUDP     string   `yaml:"listen_udp"`
-		ListenTCP     string   `yaml:"listen_tcp"`
-		Upstream      []string `yaml:"upstream"`
-		SinkholeIPv4  string   `yaml:"sinkhole_ipv4"`
-		SinkholeIPv6  string   `yaml:"sinkhole_ipv6"`
-		MaxPacketSize int      `yaml:"max_packet_size"`
-	} `yaml:"dns"`
-
-	CloudAPI struct {
-		Endpoint           string  `yaml:"endpoint"`
-		APIKey             string  `yaml:"api_key"`
-		InsecureSkipVerify bool    `yaml:"insecure_skip_verify"`
-		RateLimit          float64 `yaml:"rate_limit"`
-		Burst              int     `yaml:"burst"`
-		TimeoutSeconds     int     `yaml:"timeout_seconds"`
-	} `yaml:"cloud_api"`
-
-	TTL struct {
-		Default int `yaml:"default"`
-		Min     int `yaml:"min"`
-		Max     int `yaml:"max"`
-	} `yaml:"ttl"`
-
-	Cache struct {
-		MaxCost int64 `yaml:"max_cost"`
-	} `yaml:"cache"`
-
-	Valkey struct {
-		Address  string `yaml:"address"`
-		Password string `yaml:"password"`
-		DB       int    `yaml:"db"`
-	} `yaml:"valkey"`
-
-	Engine struct {
-		WorkerCount     int `yaml:"worker_count"`
-		WorkerQueueSize int `yaml:"worker_queue_size"`
-	} `yaml:"engine"`
+		ListenUDP     string
+		ListenTCP     string
+		MaxPacketSize int
+		SinkholeIPv4  string
+		SinkholeIPv6  string
+	}
 
 	HTTP struct {
-		Listen string `yaml:"listen"`
-	} `yaml:"http"`
+		Listen string
+	}
+
+	Valkey struct {
+		Address  string
+		Password string
+		DB       int
+	}
+
+	CloudAPI struct {
+		URL     string
+		Timeout int
+		RPS     int
+	}
+
+	Workers int
 }
 
-func LoadConfig(path string) (*Config, error) {
+func LoadConfig() (*Config, error) {
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+	cfg := &Config{}
+
+	// DNS
+	cfg.DNS.ListenUDP = getEnv("DNS_LISTEN_UDP", ":53")
+	cfg.DNS.ListenTCP = getEnv("DNS_LISTEN_TCP", ":53")
+	cfg.DNS.MaxPacketSize = getEnvInt("DNS_MAX_PACKET", 1232)
+	cfg.DNS.SinkholeIPv4 = getEnv("DNS_SINKHOLE_IPV4", "0.0.0.0")
+	cfg.DNS.SinkholeIPv6 = getEnv("DNS_SINKHOLE_IPV6", "::")
+
+	// HTTP
+	cfg.HTTP.Listen = getEnv("HTTP_LISTEN", ":8080")
+
+	// Valkey
+	cfg.Valkey.Address = getEnv("VALKEY_ADDR", "valkey:6379")
+	cfg.Valkey.Password = os.Getenv("VALKEY_PASSWORD")
+	cfg.Valkey.DB = getEnvInt("VALKEY_DB", 0)
+
+	// CloudAPI
+	cfg.CloudAPI.URL = getEnv("CLOUDAPI_URL", "")
+	cfg.CloudAPI.Timeout = getEnvInt("CLOUDAPI_TIMEOUT_MS", 2000)
+	cfg.CloudAPI.RPS = getEnvInt("CLOUDAPI_RPS", 500)
+
+	cfg.Workers = getEnvInt("WORKERS", 100)
+
+	return cfg, nil
+}
+
+func getEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
+	return def
+}
 
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+func getEnvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
 	}
-
-	return &cfg, nil
+	return def
 }
