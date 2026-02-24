@@ -15,20 +15,19 @@ type enrichmentJob struct {
 }
 
 type CheckEngine struct {
-	cfg      *Config
-	cache    *Cache
-	valkey   *ValkeyClient
+	cfg       *Config
+	cache     *Cache
+	valkey    *ValkeyClient
 	enrichers []Enricher
 
-	jobs      chan enrichmentJob
-	wg        sync.WaitGroup
-	sf        singleflight.Group
+	jobs chan enrichmentJob
+	wg   sync.WaitGroup
+	sf   singleflight.Group
 
 	stats Stats
 }
 
 func NewCheckEngine(cfg *Config, cache *Cache, valkey *ValkeyClient, enrichers []Enricher) *CheckEngine {
-
 	e := &CheckEngine{
 		cfg:       cfg,
 		cache:     cache,
@@ -58,7 +57,20 @@ func (e *CheckEngine) worker() {
 			time.Duration(e.cfg.CloudAPI.TimeoutSeconds)*time.Second)
 
 		for _, enricher := range e.enrichers {
-			enricher.Enrich(ctx, job.domain, job.result)
+			enrichStart := time.Now()
+			err := enricher.Enrich(ctx, job.domain, job.result)
+			latencyMs := float64(time.Since(enrichStart).Microseconds()) / 1000.0
+
+			// Метрики по каждому enricher
+			status := "ok"
+			if err != nil {
+				status = "error"
+			}
+			enricherCallsTotal.WithLabelValues(enricher.Name(), status).Inc()
+			enricherDuration.WithLabelValues(enricher.Name()).Observe(latencyMs)
+
+			// Debug лог
+			LogEnrich(enricher.Name(), job.domain, latencyMs, err)
 		}
 
 		cancel()
@@ -67,17 +79,20 @@ func (e *CheckEngine) worker() {
 		e.valkey.SetAsync(job.domain, job.result)
 
 		atomic.AddInt64(&e.stats.APICalls, 1)
+
+		// Обновляем gauge очереди
+		enricherQueueSize.Set(float64(len(e.jobs)))
 	}
 }
 
 func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
-
 	start := time.Now()
 	atomic.AddInt64(&e.stats.TotalRequests, 1)
 
 	// L1 cache
 	if r, ok := e.cache.Get(domain); ok {
 		atomic.AddInt64(&e.stats.CacheHits, 1)
+		cacheHitsTotal.WithLabelValues("l1").Inc()
 		return r, nil
 	}
 
@@ -86,12 +101,12 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 	// L2 cache (Valkey)
 	if r, ok := e.valkey.Get(domain); ok {
 		e.cache.Set(domain, r)
+		cacheHitsTotal.WithLabelValues("l2").Inc()
 		return r, nil
 	}
 
-	// singleflight
+	// singleflight — один запрос на домен
 	v, _, _ := e.sf.Do(domain, func() (interface{}, error) {
-
 		result := &DomainResult{
 			Domain:    domain,
 			Category:  0,
@@ -104,9 +119,10 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 		select {
 		case e.jobs <- enrichmentJob{domain: domain, result: result}:
 		default:
-			// queue full → negative short TTL
+			// Очередь переполнена — short TTL, не блокируем
 			result.Negative = true
 			result.TTL = 10
+			LogWarn("engine", "enrichment queue full, skipping domain: "+domain)
 		}
 
 		return result, nil
@@ -114,7 +130,7 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 
 	res := v.(*DomainResult)
 
-	// clamp TTL
+	// Clamp TTL
 	if res.TTL < e.cfg.TTL.Min {
 		res.TTL = e.cfg.TTL.Min
 	}
@@ -123,14 +139,12 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 	}
 
 	res.Timestamp = time.Now()
-	atomic.AddInt64(&e.stats.AvgLatencyNs,
-        time.Since(start).Nanoseconds())
+	atomic.AddInt64(&e.stats.AvgLatencyNs, time.Since(start).Nanoseconds())
 
 	return res, nil
 }
 
 func (e *CheckEngine) GetStats() Stats {
-
 	s := e.stats
 	s.EnrichmentQueue = len(e.jobs)
 
