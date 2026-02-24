@@ -1,221 +1,228 @@
-markdown
-# DNS Security Proxy
+DNS Security Proxy (Go)
 
-Проект DNS прокси с проверкой безопасности на базе CoreDNS и Go.
+Production-ready DNS proxy with:
 
-## Архитектура
-```
-┌─────────────────────────────────────────────────────┐
-│ CoreDNS 1.14.1 │
-│ (DoH/DoT/DNS фронтенд, кеширование, метрики) │
-│ │
-│ DoH (:443) ───┐ │
-│ DoT (:853) ───┼──► DNS-over-TCP ──► DNS Proxy │
-│ DNS (:53) ───┘ (:5353) │
-└──────────────────────────────────┬─────────────────┘
-│
-┌───────────────────────────────────▼─────────────────┐
-│ DNS Proxy (Go приложение) │
-│ │
-│ Логика проверок: │
-│ 1. Кеш (memory + Valkey) │
-│ 2. Cloud API проверка │
-│ 3. SLA контроль (95ms) │
-│ │
-│ Метрики: :8054/metrics │
-│ Health: :8054/health │
-└──────────────────────────────────┬─────────────────┘
-│
-┌───────────────────────────────────▼─────────────────┐
-│ Valkey (распределенный кеш) │
-└─────────────────────────────────────────────────────┘
-```
+🔐 DNS inspection
 
-## Быстрый старт
+⚡ Caching (Valkey)
 
-### Требования
-- Docker 20.10+
-- Docker Compose 2.0+
-- 2GB RAM
-- 5GB свободного места
+📊 Prometheus metrics
 
-### Установка
+🧠 External Cloud API enrichment
 
-```
-# 1. Клонируйте репозиторий
-git clone https://github.com/yourusername/dnscloud-go.git
-cd dnscloud-go
+🐳 Docker-based deployment
 
-# 2. Настройте окружение
-cp .env.example .env
-# Отредактируйте .env, установите CLOUD_API_KEY
+🔧 YAML + ENV configuration
 
-# 3. Запустите
-chmod +x setup.sh
-./setup.sh
-```
-Проверка
-```
-# Проверка DNS
-dig @127.0.0.1 google.com
-dig @127.0.0.1 example.com +tcp
+🛡 Upstream failover support
 
-# Проверка health
-curl http://localhost:8080/health
-curl http://localhost:8054/health
-```
-# Метрики
-```
-curl http://localhost:9091/metrics
-curl http://localhost:8054/metrics
-Конфигурация
-```
-Основные настройки (.env)
-```
-CLOUD_API_KEY=ваш_ключ
+Architecture
+Client
+   ↓
+DNS Proxy (Go)
+   ↓
+Valkey (cache)
+   ↓
+Upstream DNS (8.8.8.8 / 1.1.1.1 / etc)
+   ↓
+Cloud API (optional enrichment)
+
+
+Additional components:
+
+Prometheus metrics endpoint
+
+Optional Grafana integration
+
+Docker Compose orchestration
+
+Requirements
+
+Rocky Linux 10
+
+Docker
+
+Docker Compose (plugin)
+
+Installation on Rocky Linux 10
+1️⃣ Install Docker
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+
+
+Verify:
+
+docker --version
+docker compose version
+
+2️⃣ Clone project
+git clone https://github.com/your-org/dns-security-proxy.git
+cd dns-security-proxy
+
+3️⃣ Configure .env
+
+Example:
+
+# Required
+CLOUD_API_KEY=YOUR_KEY
+
+# Optional
+CLOUD_API_URL=https://your-cloud/api/
 VALKEY_PASSWORD=SecurePass123!
 LOG_LEVEL=info
 RATE_LIMIT_RPS=5
-Детальные настройки (config/config.yaml)
-Таймауты и SLA - контроль времени ответа
 
-Кеширование - настройки memory и Valkey кеша
+# DNS upstreams (comma-separated)
+DNS_UPSTREAMS=8.8.8.8:53,1.1.1.1:53
 
-Sinkhole IP - адреса для блокировки
+4️⃣ (Optional) config.yaml
 
-TTL настройки - время жизни записей по категориям
+If present, YAML values are loaded first.
+ENV variables override YAML.
 
-Endpoints
-CoreDNS: :8080/health, :9091/metrics
+Example:
 
-DNS Proxy: :8054/health, :8054/metrics
+dns:
+  listen: ":53"
+  upstreams:
+    - "8.8.8.8:53"
+    - "1.1.1.1:53"
 
-Valkey: :6379 (redis-cli)
-```
-Логи
-```
-# Логи DNS Proxy
-docker compose logs -f dns-proxy
+http:
+  listen: ":8080"
 
-# Логи CoreDNS
-docker compose logs -f coredns
+valkey:
+  address: "valkey:6379"
+  password: ""
+  db: 0
 
-# Логи Valkey
-docker compose logs -f valkey
-Производительность
-SLA: 100ms (95ms приложение + 5ms CoreDNS)
-```
-Throughput: до 10k RPS
+cloud:
+  api_url: ""
+  api_key: ""
 
-Поддержка: DNS, DoH, DoT
+rate_limit_rps: 5
+log_level: "info"
 
-Кеширование: memory + Valkey
-
-Управление
-```
-# Статус
-docker compose ps
-
-# Запуск
-docker compose up -d
-
-# Остановка
-docker compose down
-
-# Перезапуск
-docker compose restart
-
-# Обновление
-docker compose pull
+5️⃣ Start system
 docker compose up -d --build
-```
-Мониторинг
-```
-Prometheus метрики: http://localhost:8054/metrics
 
-Статистика: http://localhost:8054/stats
 
-Health checks: автоматические проверки
-```
-Расширение
-Добавление новой проверки
-Добавьте новый клиент в cloud_api.go
+Check status:
 
-Обновите логику в engine.go
-
-Добавьте конфигурацию в config.yaml
-
-Изменение SLA
-```
-yaml
-# config/config.yaml
-timeouts:
-  total: 95ms  # Общий таймаут SLA
-  cloud_api: 50ms
-```
-
-## Процесс развертывания:
-
-### 1. Подготовка сервера (Rocky Linux 10):
-```
-# Установка Docker
-sudo dnf update -y
-sudo dnf config-manager --add-repo=https://download.docker.com/linux/rhel/docker-ce.repo
-sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo systemctl enable --now docker
-sudo usermod -aG docker $USER
-newgrp docker
-
-# Установка утилит
-sudo dnf install -y git curl wget bind-utils jq openssl
-```
-2. Клонирование репозитория:
-```
-# С токеном GitHub (для приватного репо)
-git clone https://TOKEN@github.com/yourusername/dnscloud-go.git
-cd dnscloud-go
-```
-3. Настройка и запуск:
-```
-# Даем права на выполнение
-chmod +x setup.sh
-
-# Запускаем скрипт (он все сделает сам)
-./setup.sh
-
-# Скрипт выполнит:
-# 1. Создание необходимых директорий
-# 2. Генерацию конфигурационных файлов
-# 3. Генерацию TLS сертификатов
-# 4. Сборку Docker образов
-# 5. Запуск всех сервисов
-# 6. Проверку работоспособности
-```
-4. Проверка работы:
-```
-# Проверка статуса
 docker compose ps
 
-# Тестирование DNS
+Testing the System
+DNS test
 dig @127.0.0.1 google.com
-dig @127.0.0.1 example.com +tcp
 
-# Проверка метрик
-curl http://localhost:8054/metrics
-curl http://localhost:9091/metrics
 
-# Просмотр логов
+Expected: valid A records.
+
+Test TLS DNS (if enabled)
+dig @127.0.0.1 -p 853 google.com +tls
+
+Health check
+curl http://localhost:8080/health
+
+
+Expected:
+
+ok
+
+Statistics
+curl http://localhost:8080/stats | jq
+
+Prometheus metrics
+curl http://localhost:8080/metrics
+
+Logs & Debugging
+All containers
+docker compose logs -f
+
+Only DNS proxy
 docker compose logs -f dns-proxy
-```
-5. Настройка firewall (если нужно):
-```
-# Разрешаем порты
-sudo firewall-cmd --permanent --add-port=53/tcp
-sudo firewall-cmd --permanent --add-port=53/udp
-sudo firewall-cmd --permanent --add-port=853/tcp
-sudo firewall-cmd --permanent --add-port=443/tcp
-sudo firewall-cmd --permanent --add-port=8080/tcp
-sudo firewall-cmd --permanent --add-port=9091/tcp
-sudo firewall-cmd --permanent --add-port=8054/tcp
-sudo firewall-cmd --reload
-```
+
+Valkey
+docker compose logs -f valkey
+
+Inspect cache manually
+docker exec -it valkey valkey-cli
+
+
+Example:
+
+keys *
+
+Configuration Management
+Priority order
+
+Environment variables
+
+config.yaml
+
+Internal defaults
+
+Where to change what
+DNS Upstreams
+
+.env
+
+DNS_UPSTREAMS=8.8.8.8:53,1.1.1.1:53
+
+
+or config.yaml:
+
+dns:
+  upstreams:
+    - "8.8.8.8:53"
+
+Rate limit
+
+.env
+
+RATE_LIMIT_RPS=10
+
+Log level
+LOG_LEVEL=debug
+
+Valkey settings
+VALKEY_PASSWORD=...
+
+
+or in YAML.
+
+How to Extend the Project
+Add new ENV variable
+
+Add field to Config struct
+
+Load it in LoadConfig()
+
+Add fallback default
+
+No changes required in env.go unless new type is introduced.
+
+Add new metric
+
+Define Prometheus metric
+
+Register it
+
+Update in request flow
+
+Add new DNS inspection rule
+
+Modify:
+
+dns_handler.go
+
+
+Hook logic before forwarding to upstream.
+
+Add new API integration
+
+Extend:
+
+cloud_client.go
