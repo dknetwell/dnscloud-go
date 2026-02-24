@@ -61,16 +61,38 @@ func (e *CheckEngine) worker() {
 			err := enricher.Enrich(ctx, job.domain, job.result)
 			latencyMs := float64(time.Since(enrichStart).Microseconds()) / 1000.0
 
-			// Метрики по каждому enricher
 			status := "ok"
 			if err != nil {
 				status = "error"
 			}
+
 			enricherCallsTotal.WithLabelValues(enricher.Name(), status).Inc()
 			enricherDuration.WithLabelValues(enricher.Name()).Observe(latencyMs)
 
-			// Debug лог
-			LogEnrich(enricher.Name(), job.domain, latencyMs, err)
+			// Логируем результат enrichment всегда на info уровне
+			// чтобы было видно latency, категорию и статус без debug режима
+			if err != nil {
+				writeLog(LogEntry{
+					Level:     "warn",
+					Component: enricher.Name(),
+					Msg:       "enrich_error",
+					Domain:    job.domain,
+					LatencyMs: latencyMs,
+					Error:     err.Error(),
+				})
+			} else {
+				writeLog(LogEntry{
+					Level:     "info",
+					Component: enricher.Name(),
+					Msg:       "enrich_ok",
+					Domain:    job.domain,
+					LatencyMs: latencyMs,
+					Category:  job.result.Category,
+					Action:    job.result.Action,
+					Source:    job.result.Source,
+					Blocked:   &job.result.Blocked,
+				})
+			}
 		}
 
 		cancel()
@@ -79,8 +101,6 @@ func (e *CheckEngine) worker() {
 		e.valkey.SetAsync(job.domain, job.result)
 
 		atomic.AddInt64(&e.stats.APICalls, 1)
-
-		// Обновляем gauge очереди
 		enricherQueueSize.Set(float64(len(e.jobs)))
 	}
 }
@@ -119,7 +139,6 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 		select {
 		case e.jobs <- enrichmentJob{domain: domain, result: result}:
 		default:
-			// Очередь переполнена — short TTL, не блокируем
 			result.Negative = true
 			result.TTL = 10
 			LogWarn("engine", "enrichment queue full, skipping domain: "+domain)
@@ -130,7 +149,6 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 
 	res := v.(*DomainResult)
 
-	// Clamp TTL
 	if res.TTL < e.cfg.TTL.Min {
 		res.TTL = e.cfg.TTL.Min
 	}
