@@ -3,15 +3,18 @@ FROM golang:1.24.13-alpine AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache git ca-certificates
+# git не нужен — код копируется через COPY, не клонируется
+RUN apk add --no-cache ca-certificates
 
-# Копируем весь проект сразу
+# Копируем go.mod и go.sum отдельно для кэширования зависимостей
+COPY go.mod go.sum* ./
+RUN go mod download
+
+# Копируем весь проект
 COPY . .
 
-# Если go.sum нет — создастся автоматически
-RUN go mod tidy
-
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dns-proxy .
+RUN go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dns-proxy .
 
 # ===== RUNTIME STAGE =====
 FROM alpine:3.18
