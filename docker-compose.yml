@@ -29,8 +29,6 @@ services:
       DNS_LISTEN_TCP: ":53"
       ENGINE_WORKERS: "200"
     ports:
-      - "53:53/udp"
-      - "53:53/tcp"
       - "8080:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
