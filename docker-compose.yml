@@ -51,8 +51,8 @@ services:
       - ./certs:/certs:ro      # ← ВАЖНО: добавили сертификаты
     command: -conf /Corefile
     ports:
-      - "1053:53/udp"
-      - "1053:53/tcp"
+      - "53:53/udp"
+      - "53:53/tcp"
       - "853:853/tcp"
       - "443:443/tcp"
 
