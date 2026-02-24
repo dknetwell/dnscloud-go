@@ -1,15 +1,25 @@
 .:53 {
-    forward . 172.28.0.10
+    forward . 172.28.0.20:53 {
+        prefer_udp
+    }
     errors
     log
 }
 
 tls://.:853 {
     tls /certs/server.crt /certs/server.key
-    forward . 172.28.0.10
+    forward . 172.28.0.20:53 {
+        force_tcp
+    }
+    errors
+    log
 }
 
 https://.:443 {
     tls /certs/server.crt /certs/server.key
-    forward . 172.28.0.10
+    forward . 172.28.0.20:53 {
+        force_tcp
+    }
+    errors
+    log
 }
