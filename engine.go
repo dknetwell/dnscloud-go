@@ -69,8 +69,9 @@ func (e *CheckEngine) worker() {
 			enricherCallsTotal.WithLabelValues(enricher.Name(), status).Inc()
 			enricherDuration.WithLabelValues(enricher.Name()).Observe(latencyMs)
 
-			// Логируем результат enrichment всегда на info уровне
-			// чтобы было видно latency, категорию и статус без debug режима
+			// Копируем bool чтобы взять указатель
+			blocked := job.result.Blocked
+
 			if err != nil {
 				writeLog(LogEntry{
 					Level:     "warn",
@@ -86,11 +87,11 @@ func (e *CheckEngine) worker() {
 					Component: enricher.Name(),
 					Msg:       "enrich_ok",
 					Domain:    job.domain,
-					LatencyMs: latencyMs,
+					LatencyMs: latencyMs,   // latency обращения к CloudAPI
 					Category:  job.result.Category,
 					Action:    job.result.Action,
 					Source:    job.result.Source,
-					Blocked:   &job.result.Blocked,
+					Blocked:   &blocked,
 				})
 			}
 		}
