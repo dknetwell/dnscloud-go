@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -24,7 +25,6 @@ type CloudAPIResponse struct {
 }
 
 func NewCloudAPIEnricher(cfg *Config) *CloudAPIEnricher {
-
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: cfg.CloudAPI.InsecureSkipVerify,
@@ -49,33 +49,47 @@ func (c *CloudAPIEnricher) Name() string {
 }
 
 func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *DomainResult) error {
-
-	if !c.limiter.Allow() {
+	if c.cfg.CloudAPI.Endpoint == "" {
 		return nil
 	}
 
-	req, _ := http.NewRequestWithContext(ctx,
+	if !c.limiter.Allow() {
+		return fmt.Errorf("rate limit exceeded")
+	}
+
+	req, err := http.NewRequestWithContext(ctx,
 		"GET",
 		c.cfg.CloudAPI.Endpoint+"?domain="+domain,
 		nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
 
-	req.Header.Set("Authorization", c.cfg.CloudAPI.APIKey)
+	req.Header.Set("Authorization", "Bearer "+c.cfg.CloudAPI.APIKey)
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+
 	var apiResp CloudAPIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return err
+		return fmt.Errorf("decode response: %w", err)
 	}
 
 	result.Category = apiResp.Category
 	result.Action = apiResp.Action
-	result.TTL = apiResp.TTL
 	result.Source = "cloud_api"
+
+	if apiResp.TTL > 0 {
+		result.TTL = apiResp.TTL
+	}
 
 	if apiResp.Category != 0 {
 		result.Blocked = true
