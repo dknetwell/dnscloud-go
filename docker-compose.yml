@@ -23,6 +23,8 @@ services:
     networks:
       dnsnet:
         ipv4_address: 172.28.0.20
+    env_file:
+      - .env                        # ← явная загрузка .env в контейнер
     environment:
       VALKEY_ADDR: valkey:6379
       DNS_LISTEN_UDP: ":53"
@@ -48,7 +50,7 @@ services:
         ipv4_address: 172.28.0.30
     volumes:
       - ./Corefile:/Corefile
-      - ./certs:/certs:ro      # ← ВАЖНО: добавили сертификаты
+      - ./certs:/certs:ro
     command: -conf /Corefile
     ports:
       - "53:53/udp"
