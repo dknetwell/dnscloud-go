@@ -31,7 +31,7 @@ func (s *DNSServer) Start() {
 	udpServer := &dns.Server{
 		Addr:         s.cfg.DNS.ListenUDP,
 		Net:          "udp",
-		UDPSize:      s.cfg.DNS.MaxPacketSize, // int, без приведения типа
+		UDPSize:      s.cfg.DNS.MaxPacketSize,
 		ReadTimeout:  2 * time.Second,
 		WriteTimeout: 2 * time.Second,
 	}
@@ -61,7 +61,6 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 	domain := strings.TrimSuffix(q.Name, ".")
 	qtype := dns.TypeToString[q.Qtype]
 
-	// Извлекаем IP клиента
 	clientIP := ""
 	if addr := w.RemoteAddr(); addr != nil {
 		host, _, err := net.SplitHostPort(addr.String())
@@ -77,7 +76,6 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 	latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
 	blocked := result != nil && result.Blocked
 
-	// Prometheus
 	blockedLabel := "false"
 	if blocked {
 		blockedLabel = "true"
@@ -85,7 +83,6 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	requestDuration.WithLabelValues(blockedLabel).Observe(latencyMs)
 
-	// Structured log
 	boolBlocked := blocked
 	logEntry := LogEntry{
 		Domain:    domain,
@@ -104,17 +101,17 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	LogDNSRequest(logEntry)
 
-	// Sinkhole если заблокировано
 	if blocked {
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Authoritative = true
-		s.writeSinkhole(m, q)
+		// Используем sinkhole из результата (выбран по категории),
+		// fallback на глобальный из конфига
+		s.writeSinkhole(m, q, result)
 		_ = w.WriteMsg(m)
 		return
 	}
 
-	// Forward upstream
 	resp, err := s.forwardToUpstream(r)
 	if err != nil {
 		LogError("dns", "upstream failed", err)
@@ -138,7 +135,20 @@ func (s *DNSServer) forwardToUpstream(r *dns.Msg) (*dns.Msg, error) {
 	return nil, fmt.Errorf("all upstreams failed")
 }
 
-func (s *DNSServer) writeSinkhole(m *dns.Msg, q dns.Question) {
+func (s *DNSServer) writeSinkhole(m *dns.Msg, q dns.Question, result *DomainResult) {
+	// Приоритет: sinkhole из результата (задан по категории) → глобальный из конфига
+	ipv4 := s.cfg.DNS.SinkholeIPv4
+	ipv6 := s.cfg.DNS.SinkholeIPv6
+
+	if result != nil {
+		if result.SinkholeIPv4 != "" {
+			ipv4 = result.SinkholeIPv4
+		}
+		if result.SinkholeIPv6 != "" {
+			ipv6 = result.SinkholeIPv6
+		}
+	}
+
 	switch q.Qtype {
 	case dns.TypeA:
 		m.Answer = append(m.Answer, &dns.A{
@@ -148,7 +158,7 @@ func (s *DNSServer) writeSinkhole(m *dns.Msg, q dns.Question) {
 				Class:  dns.ClassINET,
 				Ttl:    60,
 			},
-			A: net.ParseIP(s.cfg.DNS.SinkholeIPv4),
+			A: net.ParseIP(ipv4),
 		})
 	case dns.TypeAAAA:
 		m.Answer = append(m.Answer, &dns.AAAA{
@@ -158,7 +168,7 @@ func (s *DNSServer) writeSinkhole(m *dns.Msg, q dns.Question) {
 				Class:  dns.ClassINET,
 				Ttl:    60,
 			},
-			AAAA: net.ParseIP(s.cfg.DNS.SinkholeIPv6),
+			AAAA: net.ParseIP(ipv6),
 		})
 	}
 }
