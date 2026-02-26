@@ -25,29 +25,28 @@ func shouldLog(level string) bool {
 	return levelOrder[level] >= levelOrder[logLevel]
 }
 
-// LogEntry — структура одной строки лога
+// LogEntry — все поля без omitempty на числах чтобы category=0 и latency_ms=0.0 попадали в JSON
 type LogEntry struct {
 	Timestamp string `json:"ts"`
 	Level     string `json:"level"`
 	Component string `json:"component"`
 	Msg       string `json:"msg"`
 
-	// DNS-специфичные поля (опциональные)
-	Domain    string  `json:"domain,omitempty"`
-	ClientIP  string  `json:"client_ip,omitempty"`
-	Category  int     `json:"category,omitempty"`
-	Action    string  `json:"action,omitempty"`
-	Source    string  `json:"source,omitempty"`
-	Blocked   *bool   `json:"blocked,omitempty"`
-	CacheHit  *bool   `json:"cache_hit,omitempty"`
-	LatencyMs float64 `json:"latency_ms,omitempty"`
-	TTL       int     `json:"ttl,omitempty"`
-	Qtype     string  `json:"qtype,omitempty"`
+	// omitempty только на строках — пустая строка не несёт смысла
+	Domain   string `json:"domain,omitempty"`
+	ClientIP string `json:"client_ip,omitempty"`
+	Action   string `json:"action,omitempty"`
+	Source   string `json:"source,omitempty"`
+	Qtype    string `json:"qtype,omitempty"`
+	Error    string `json:"error,omitempty"`
 
-	// Ошибка
-	Error string `json:"error,omitempty"`
+	// Числа и bool — всегда пишем если поле задано через *ptr или явно
+	Category  *int     `json:"category,omitempty"`  // указатель: nil = не задано, 0 = benign
+	LatencyMs *float64 `json:"latency_ms,omitempty"`
+	TTL       *int     `json:"ttl,omitempty"`
+	Blocked   *bool    `json:"blocked,omitempty"`
+	CacheHit  *bool    `json:"cache_hit,omitempty"`
 
-	// Произвольные доп. поля
 	Fields map[string]interface{} `json:"fields,omitempty"`
 }
 
@@ -57,7 +56,9 @@ func writeLog(entry LogEntry) {
 	os.Stdout.Write(append(data, '\n'))
 }
 
-// --- Базовые методы ---
+func ptrInt(v int) *int         { return &v }
+func ptrFloat(v float64) *float64 { return &v }
+func ptrBool(v bool) *bool      { return &v }
 
 func LogDebug(component, msg string) {
 	if shouldLog("debug") {
@@ -96,38 +97,56 @@ func LogFatal(component, msg string, err error) {
 	os.Exit(1)
 }
 
-// --- DNS request лог (основной) ---
-
-func LogDNSRequest(entry LogEntry) {
-	if shouldLog("info") {
-		entry.Level = "info"
-		entry.Component = "dns"
-		entry.Msg = "dns_request"
-		writeLog(entry)
-	}
-}
-
-// --- Enricher лог ---
-
-func LogEnrich(component, domain string, latencyMs float64, err error) {
-	if !shouldLog("debug") {
+func LogDNSRequest(domain, clientIP, qtype, action, source string, latencyMs float64, ttl int, blocked bool, category int) {
+	if !shouldLog("info") {
 		return
 	}
-	e := LogEntry{
-		Level:     "debug",
-		Component: component,
-		Msg:       "enrich",
+	writeLog(LogEntry{
+		Level:     "info",
+		Component: "dns",
+		Msg:       "dns_request",
 		Domain:    domain,
-		LatencyMs: latencyMs,
-	}
-	if err != nil {
-		e.Error = err.Error()
-		e.Level = "warn"
-	}
-	writeLog(e)
+		ClientIP:  clientIP,
+		Qtype:     qtype,
+		Action:    action,
+		Source:    source,
+		LatencyMs: ptrFloat(latencyMs),
+		TTL:       ptrInt(ttl),
+		Blocked:   ptrBool(blocked),
+		Category:  ptrInt(category),
+	})
 }
 
-// --- WithFields для произвольного контекста ---
+func LogEnrichResult(component, domain string, latencyMs float64, category int, action, source string, blocked bool, err error) {
+	if err != nil {
+		if !shouldLog("warn") {
+			return
+		}
+		writeLog(LogEntry{
+			Level:     "warn",
+			Component: component,
+			Msg:       "enrich_error",
+			Domain:    domain,
+			LatencyMs: ptrFloat(latencyMs),
+			Error:     err.Error(),
+		})
+		return
+	}
+	if !shouldLog("info") {
+		return
+	}
+	writeLog(LogEntry{
+		Level:     "info",
+		Component: component,
+		Msg:       "enrich_ok",
+		Domain:    domain,
+		LatencyMs: ptrFloat(latencyMs),
+		Category:  ptrInt(category),
+		Action:    action,
+		Source:    source,
+		Blocked:   ptrBool(blocked),
+	})
+}
 
 func LogInfoFields(component, msg string, fields map[string]interface{}) {
 	if shouldLog("info") {
