@@ -83,30 +83,23 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	requestDuration.WithLabelValues(blockedLabel).Observe(latencyMs)
 
-	boolBlocked := blocked
-	logEntry := LogEntry{
-		Domain:    domain,
-		ClientIP:  clientIP,
-		Qtype:     qtype,
-		LatencyMs: latencyMs,
-		Blocked:   &boolBlocked,
-	}
-
+	category := 0
+	action := "allow"
+	source := "engine"
+	ttl := 300
 	if result != nil {
-		logEntry.Category = result.Category
-		logEntry.Action = result.Action
-		logEntry.Source = result.Source
-		logEntry.TTL = result.TTL
+		category = result.Category
+		action = result.Action
+		source = result.Source
+		ttl = result.TTL
 	}
 
-	LogDNSRequest(logEntry)
+	LogDNSRequest(domain, clientIP, qtype, action, source, latencyMs, ttl, blocked, category)
 
 	if blocked {
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Authoritative = true
-		// Используем sinkhole из результата (выбран по категории),
-		// fallback на глобальный из конфига
 		s.writeSinkhole(m, q, result)
 		_ = w.WriteMsg(m)
 		return
@@ -136,7 +129,6 @@ func (s *DNSServer) forwardToUpstream(r *dns.Msg) (*dns.Msg, error) {
 }
 
 func (s *DNSServer) writeSinkhole(m *dns.Msg, q dns.Question, result *DomainResult) {
-	// Приоритет: sinkhole из результата (задан по категории) → глобальный из конфига
 	ipv4 := s.cfg.DNS.SinkholeIPv4
 	ipv6 := s.cfg.DNS.SinkholeIPv6
 
