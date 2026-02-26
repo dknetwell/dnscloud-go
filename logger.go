@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"strings"
@@ -52,8 +53,11 @@ type LogEntry struct {
 
 func writeLog(entry LogEntry) {
 	entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
-	data, _ := json.Marshal(entry)
-	os.Stdout.Write(append(data, '\n'))
+	buf := &bytes.Buffer{}
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false) // не экранировать <, >, & в строках логов
+	_ = enc.Encode(entry)    // Encode добавляет \n автоматически
+	os.Stdout.Write(buf.Bytes())
 }
 
 func ptrInt(v int) *int         { return &v }
