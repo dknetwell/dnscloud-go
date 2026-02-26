@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"time"
@@ -17,11 +18,22 @@ type CloudAPIEnricher struct {
 	limiter *rate.Limiter
 }
 
-type CloudAPIResponse struct {
-	Domain   string `json:"domain"`
+// XML структура ответа:
+// <response status="success"><result>{"dns-signature":[...]}</result></response>
+
+type cloudAPIXMLResponse struct {
+	Status string `xml:"status,attr"`
+	Result string `xml:"result"`
+}
+
+type cloudAPIJSONResult struct {
+	DNSSignature []cloudAPISignature `json:"dns-signature"`
+}
+
+type cloudAPISignature struct {
+	FQDN     string `json:"fqdn"`
 	Category int    `json:"category"`
 	TTL      int    `json:"ttl"`
-	Action   string `json:"action"`
 }
 
 func NewCloudAPIEnricher(cfg *Config) *CloudAPIEnricher {
@@ -66,7 +78,7 @@ func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *Do
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.cfg.CloudAPI.APIKey)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/xml")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -78,21 +90,45 @@ func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *Do
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
-	var apiResp CloudAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+	// Парсим XML обёртку
+	var xmlResp cloudAPIXMLResponse
+	if err := xml.NewDecoder(resp.Body).Decode(&xmlResp); err != nil {
+		return fmt.Errorf("decode xml: %w", err)
 	}
 
-	result.Category = apiResp.Category
-	result.Action = apiResp.Action
+	if xmlResp.Status != "success" {
+		return fmt.Errorf("api status: %s", xmlResp.Status)
+	}
+
+	// Парсим JSON внутри <result>
+	var jsonResult cloudAPIJSONResult
+	if err := json.Unmarshal([]byte(xmlResp.Result), &jsonResult); err != nil {
+		return fmt.Errorf("decode json result: %w", err)
+	}
+
+	if len(jsonResult.DNSSignature) == 0 {
+		return nil
+	}
+
+	sig := jsonResult.DNSSignature[0]
+
+	result.Category = sig.Category
 	result.Source = "cloud_api"
 
-	if apiResp.TTL > 0 {
-		result.TTL = apiResp.TTL
+	if sig.TTL > 0 {
+		result.TTL = sig.TTL
 	}
 
-	if apiResp.Category != 0 {
+	// Определяем действие по категории через конфиг
+	catCfg, known := c.cfg.Categories[sig.Category]
+	if known && catCfg.Action == "block" {
 		result.Blocked = true
+		result.Action = "block"
+		result.SinkholeIPv4 = catCfg.SinkholeIPv4
+		result.SinkholeIPv6 = catCfg.SinkholeIPv6
+	} else {
+		result.Blocked = false
+		result.Action = "allow"
 	}
 
 	return nil
