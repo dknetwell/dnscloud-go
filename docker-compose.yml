@@ -24,7 +24,9 @@ services:
       dnsnet:
         ipv4_address: 172.28.0.20
     env_file:
-      - .env                        # ← явная загрузка .env в контейнер
+      - .env
+    volumes:
+      - ./config:/app/config:ro
     environment:
       VALKEY_ADDR: valkey:6379
       DNS_LISTEN_UDP: ":53"
