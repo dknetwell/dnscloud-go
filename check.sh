@@ -71,10 +71,9 @@ check_contains "yan.ru A (UDP)" "$r" "\."
 r=$(dig @${HOST} example.com MX +noall +answer 2>/dev/null)
 check_contains "example.com MX (UDP)" "$r" "MX"
 
-# TXT cloudflare.com — большой ответ, dig автоматически делает retry по TCP (tc=truncated)
 # Проверяем через +tcp явно
-r=$(dig +short +tcp @${HOST} cloudflare.com TXT 2>/dev/null | head -1)
-check_contains "cloudflare.com TXT (TCP fallback, ответ truncated по UDP — это норма)" "$r" "."
+r=$(dig +short +tcp @${HOST} google.com TXT 2>/dev/null | head -1)
+check_contains "google.com TXT (TCP)" "$r" "."
 
 # ============================================================
 section "3. DNS — plain TCP :53"
