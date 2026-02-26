@@ -12,8 +12,10 @@ type DomainResult struct {
 	Source    string    `json:"source"`
 	Timestamp time.Time `json:"timestamp"`
 
-	Blocked  bool `json:"blocked"`
-	Negative bool `json:"-"`
+	Blocked      bool   `json:"blocked"`
+	SinkholeIPv4 string `json:"sinkhole_ipv4,omitempty"` // выбранный sinkhole для этого домена
+	SinkholeIPv6 string `json:"sinkhole_ipv6,omitempty"`
+	Negative     bool   `json:"-"`
 }
 
 type Stats struct {
