@@ -14,9 +14,8 @@ fi
 
 mkdir -p config certs
 
-# config.yaml
 if [ ! -f config/config.yaml ]; then
-cat > config/config.yaml <<EOF
+cat > config/config.yaml <<'YAML'
 logging:
   level: info
   syslog: false
@@ -26,6 +25,7 @@ dns:
   listen_tcp: ":53"
   upstream:
     - "8.8.8.8:53"
+  # Глобальный fallback sinkhole (если категория не задана или sinkhole_ipv4 пуст)
   sinkhole_ipv4: "0.0.0.0"
   sinkhole_ipv6: "::"
   max_packet_size: 1232
@@ -35,8 +35,74 @@ cloud_api:
   api_key: "CHANGE_ME"
   insecure_skip_verify: false
   rate_limit: 50
-  burst: 20
+  burst: 100
   timeout_seconds: 2
+
+# ─────────────────────────────────────────────────────────────
+# Словарь категорий CloudAPI → действие + sinkhole
+#
+# Категории:
+#   0 - benign/unknown
+#   1 - malware
+#   2 - command and control
+#   3 - phishing
+#   4 - dynamicDNS
+#   5 - newly registered domain
+#   6 - grayware
+#   7 - parked
+#   8 - proxy
+#   9 - allowlist
+#
+# action: block — заблокировать, вернуть sinkhole
+# action: allow — пропустить
+#
+# sinkhole_ipv4/ipv6:
+#   "" или не указан → использовать глобальный dns.sinkhole_ipv4
+#   "0.0.0.0"        → hard drop (NXDOMAIN-аналог)
+#   "192.168.1.100"  → страница-заглушка (block page)
+# ─────────────────────────────────────────────────────────────
+categories:
+  1:
+    name: malware
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+  2:
+    name: command_and_control
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+  3:
+    name: phishing
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+  4:
+    name: dynamic_dns
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+  5:
+    name: newly_registered
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+  6:
+    name: grayware
+    action: block
+    sinkhole_ipv4: ""          # пусто → fallback на dns.sinkhole_ipv4
+    sinkhole_ipv6: ""
+  7:
+    name: parked
+    action: allow              # парковка — не блокируем
+  8:
+    name: proxy
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+  9:
+    name: allowlist
+    action: allow
 
 ttl:
   default: 60
@@ -57,11 +123,10 @@ engine:
 
 http:
   listen: ":8080"
-EOF
+YAML
 echo "Created config/config.yaml"
 fi
 
-# certs
 if [ ! -f certs/server.crt ]; then
     echo "Generating self-signed certificates..."
     openssl req -x509 -newkey rsa:2048 -nodes \
