@@ -1,0 +1,138 @@
+# =============================================================================
+# DNS Security Proxy — основной конфиг
+# Приоритет: переменные окружения (.env) → этот файл
+# =============================================================================
+
+logging:
+  level: info          # debug | info | warn | error
+
+dns:
+  listen_udp: ":53"
+  listen_tcp: ":53"
+  upstream:
+    - "8.8.8.8:53"
+    - "1.1.1.1:53"
+  # Глобальный fallback sinkhole — используется если у категории sinkhole не задан
+  sinkhole_ipv4: "0.0.0.0"
+  sinkhole_ipv6: "::"
+  max_packet_size: 1232
+
+cloud_api:
+  endpoint: ""                  # переопределяется через CLOUDAPI_ENDPOINT в .env
+  api_key: ""                   # переопределяется через CLOUDAPI_APIKEY в .env
+  insecure_skip_verify: false   # true если self-signed cert (переопределяется CLOUDAPI_INSECURE)
+  timeout_seconds: 5            # таймаут ожидания ответа от CloudAPI (не влияет на SLA клиента)
+  rate_limit: 50                # запросов в секунду к CloudAPI
+  burst: 100                    # burst бюджет токенов
+
+# =============================================================================
+# Словарь категорий CloudAPI → действие + sinkhole + ttl в Valkey
+#
+# Категории:
+#   0 - benign/unknown
+#   1 - malware
+#   2 - command and control
+#   3 - phishing
+#   4 - dynamicDNS
+#   5 - newly registered domain
+#   6 - grayware
+#   7 - parked
+#   8 - proxy
+#   9 - allowlist
+#
+# action:
+#   block — вернуть sinkhole клиенту
+#   allow — пропустить на upstream
+#
+# sinkhole_ipv4 / sinkhole_ipv6:
+#   ""        → использовать глобальный dns.sinkhole_ipv4
+#   "0.0.0.0" → hard drop (нет страницы-заглушки)
+#   "192.168.1.100" → страница-заглушка (block page)
+#
+# cache_ttl — время жизни записи в Valkey (секунды)
+#   Не влияет на TTL который отдаётся клиенту в DNS-ответе
+# =============================================================================
+categories:
+  0:
+    name: benign
+    action: allow
+    cache_ttl: 3600        # чистые домены кэшируем на 1 час
+
+  1:
+    name: malware
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+    cache_ttl: 3600
+
+  2:
+    name: command_and_control
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+    cache_ttl: 3600
+
+  3:
+    name: phishing
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+    cache_ttl: 3600
+
+  4:
+    name: dynamic_dns
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+    cache_ttl: 3600
+
+  5:
+    name: newly_registered
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+    cache_ttl: 3600
+
+  6:
+    name: grayware
+    action: block
+    sinkhole_ipv4: ""      # пусто → fallback на dns.sinkhole_ipv4
+    sinkhole_ipv6: ""
+    cache_ttl: 3600
+
+  7:
+    name: parked
+    action: allow          # парковка — не блокируем
+    cache_ttl: 3600
+
+  8:
+    name: proxy
+    action: block
+    sinkhole_ipv4: "0.0.0.0"
+    sinkhole_ipv6: "::"
+    cache_ttl: 3600
+
+  9:
+    name: allowlist
+    action: allow
+    cache_ttl: 3600
+
+ttl:
+  default: 300       # TTL для новых записей до получения ответа от CloudAPI
+  min: 60            # clamp снизу
+  max: 86400         # clamp сверху
+
+cache:
+  max_cost: 1073741824   # 1 GB — максимальный размер L1 (Ristretto)
+
+valkey:
+  address: "valkey:6379"  # переопределяется через VALKEY_ADDR в .env
+  password: ""
+  db: 0
+
+engine:
+  worker_count: 100        # горутин-воркеров обогащения
+  worker_queue_size: 1000  # размер очереди задач
+
+http:
+  listen: ":8080"
