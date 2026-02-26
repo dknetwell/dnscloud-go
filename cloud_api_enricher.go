@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -18,8 +19,8 @@ type CloudAPIEnricher struct {
 	limiter *rate.Limiter
 }
 
-// XML структура ответа:
-// <response status="success"><result>{"dns-signature":[...]}</result></response>
+// Формат ответа CloudAPI:
+// <response status="success"><result>{"dns-signature":[{"fqdn":"...","category":5,"ttl":300}]}</result></response>
 
 type cloudAPIXMLResponse struct {
 	Status string `xml:"status,attr"`
@@ -62,6 +63,10 @@ func (c *CloudAPIEnricher) Name() string {
 
 func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *DomainResult) error {
 	if c.cfg.CloudAPI.Endpoint == "" {
+		LogInfoFields("cloud_api", "enrich_skip", map[string]interface{}{
+			"domain": domain,
+			"reason": "endpoint not configured",
+		})
 		return nil
 	}
 
@@ -69,15 +74,22 @@ func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *Do
 		return fmt.Errorf("rate limit exceeded")
 	}
 
-	req, err := http.NewRequestWithContext(ctx,
-		"GET",
-		c.cfg.CloudAPI.Endpoint+"?domain="+domain,
-		nil)
+	// Формируем XML cmd запрос для PAN-OS CloudAPI
+	// GET /api/?type=op&cmd=<test><dns-proxy><dns-signature><fqdn>DOMAIN</fqdn></dns-signature></dns-proxy></test>
+	cmd := fmt.Sprintf(
+		"<test><dns-proxy><dns-signature><fqdn>%s</fqdn></dns-signature></dns-proxy></test>",
+		url.QueryEscape(domain),
+	)
+
+	reqURL := fmt.Sprintf("%s?type=op&cmd=%s", c.cfg.CloudAPI.Endpoint, cmd)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.cfg.CloudAPI.APIKey)
+	// PAN-OS использует X-PAN-KEY, не Bearer
+	req.Header.Set("X-PAN-KEY", c.cfg.CloudAPI.APIKey)
 	req.Header.Set("Accept", "application/xml")
 
 	resp, err := c.client.Do(req)
@@ -107,6 +119,10 @@ func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *Do
 	}
 
 	if len(jsonResult.DNSSignature) == 0 {
+		// Домен не найден в базе — считаем чистым
+		result.Category = 0
+		result.Action = "allow"
+		result.Source = "cloud_api"
 		return nil
 	}
 
@@ -119,11 +135,12 @@ func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *Do
 		result.TTL = sig.TTL
 	}
 
-	// Определяем действие по категории через конфиг
+	// Определяем действие по словарю категорий из конфига
 	catCfg, known := c.cfg.Categories[sig.Category]
 	if known && catCfg.Action == "block" {
 		result.Blocked = true
 		result.Action = "block"
+		// Sinkhole берём из категории, fallback на глобальный
 		result.SinkholeIPv4 = catCfg.SinkholeIPv4
 		result.SinkholeIPv6 = catCfg.SinkholeIPv6
 	} else {
