@@ -65,35 +65,19 @@ func (e *CheckEngine) worker() {
 			if err != nil {
 				status = "error"
 			}
-
 			enricherCallsTotal.WithLabelValues(enricher.Name(), status).Inc()
 			enricherDuration.WithLabelValues(enricher.Name()).Observe(latencyMs)
 
-			// Копируем bool чтобы взять указатель
-			blocked := job.result.Blocked
-
-			if err != nil {
-				writeLog(LogEntry{
-					Level:     "warn",
-					Component: enricher.Name(),
-					Msg:       "enrich_error",
-					Domain:    job.domain,
-					LatencyMs: latencyMs,
-					Error:     err.Error(),
-				})
-			} else {
-				writeLog(LogEntry{
-					Level:     "info",
-					Component: enricher.Name(),
-					Msg:       "enrich_ok",
-					Domain:    job.domain,
-					LatencyMs: latencyMs,   // latency обращения к CloudAPI
-					Category:  job.result.Category,
-					Action:    job.result.Action,
-					Source:    job.result.Source,
-					Blocked:   &blocked,
-				})
-			}
+			LogEnrichResult(
+				enricher.Name(),
+				job.domain,
+				latencyMs,
+				job.result.Category,
+				job.result.Action,
+				job.result.Source,
+				job.result.Blocked,
+				err,
+			)
 		}
 
 		cancel()
