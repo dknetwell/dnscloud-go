@@ -7,6 +7,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// CategoryConfig — настройки для одной категории угроз
+type CategoryConfig struct {
+	Name         string `yaml:"name"`
+	Action       string `yaml:"action"`        // "block" или "allow"
+	SinkholeIPv4 string `yaml:"sinkhole_ipv4"` // переопределяет глобальный
+	SinkholeIPv6 string `yaml:"sinkhole_ipv6"`
+}
+
 type Config struct {
 
 	Logging struct {
@@ -18,7 +26,7 @@ type Config struct {
 		ListenUDP     string   `yaml:"listen_udp"`
 		ListenTCP     string   `yaml:"listen_tcp"`
 		Upstream      []string `yaml:"upstream"`
-		SinkholeIPv4  string   `yaml:"sinkhole_ipv4"`
+		SinkholeIPv4  string   `yaml:"sinkhole_ipv4"`  // глобальный fallback
 		SinkholeIPv6  string   `yaml:"sinkhole_ipv6"`
 		MaxPacketSize int      `yaml:"max_packet_size"`
 	} `yaml:"dns"`
@@ -31,6 +39,22 @@ type Config struct {
 		Burst              int     `yaml:"burst"`
 		TimeoutSeconds     int     `yaml:"timeout_seconds"`
 	} `yaml:"cloud_api"`
+
+	// Словарь категорий: ключ — номер категории из CloudAPI
+	// Изменять здесь или в config.yaml в секции categories:
+	//
+	//   categories:
+	//     1:
+	//       name: malware
+	//       action: block
+	//       sinkhole_ipv4: "0.0.0.0"
+	//       sinkhole_ipv6: "::"
+	//     6:
+	//       name: grayware
+	//       action: block
+	//       sinkhole_ipv4: "192.168.1.100"  # страница-заглушка
+	//       sinkhole_ipv6: "::1"
+	Categories map[int]CategoryConfig `yaml:"categories"`
 
 	TTL struct {
 		Default int `yaml:"default"`
@@ -54,7 +78,7 @@ type Config struct {
 	} `yaml:"engine"`
 
 	HTTP struct {
-		Listen string `yaml:"listen"`
+		Listen string `yaml:"http"`
 	} `yaml:"http"`
 }
 
@@ -69,25 +93,46 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	// ===== DNS =====
+	// Дефолтный словарь категорий если не задан в YAML
+	// ─────────────────────────────────────────────────────────────────
+	// Категории CloudAPI:
+	//   0 - benign/unknown  → allow
+	//   1 - malware         → block → 0.0.0.0 (hard drop)
+	//   2 - command&control → block → 0.0.0.0 (hard drop)
+	//   3 - phishing        → block → 0.0.0.0 (hard drop)
+	//   4 - dynamicDNS      → block → 0.0.0.0
+	//   5 - newly registered→ block → 0.0.0.0
+	//   6 - grayware        → block → глобальный sinkhole
+	//   7 - parked          → allow  (не блокируем)
+	//   8 - proxy           → block → 0.0.0.0
+	//   9 - allowlist       → allow
+	// ─────────────────────────────────────────────────────────────────
+	if cfg.Categories == nil {
+		cfg.Categories = map[int]CategoryConfig{
+			1: {Name: "malware",             Action: "block", SinkholeIPv4: "0.0.0.0",       SinkholeIPv6: "::"},
+			2: {Name: "command_and_control", Action: "block", SinkholeIPv4: "0.0.0.0",       SinkholeIPv6: "::"},
+			3: {Name: "phishing",            Action: "block", SinkholeIPv4: "0.0.0.0",       SinkholeIPv6: "::"},
+			4: {Name: "dynamic_dns",         Action: "block", SinkholeIPv4: "0.0.0.0",       SinkholeIPv6: "::"},
+			5: {Name: "newly_registered",    Action: "block", SinkholeIPv4: "0.0.0.0",       SinkholeIPv6: "::"},
+			6: {Name: "grayware",            Action: "block", SinkholeIPv4: "",               SinkholeIPv6: ""},   // "" → fallback на глобальный dns.sinkhole_ipv4
+			7: {Name: "parked",              Action: "allow", SinkholeIPv4: "",               SinkholeIPv6: ""},
+			8: {Name: "proxy",               Action: "block", SinkholeIPv4: "0.0.0.0",       SinkholeIPv6: "::"},
+			9: {Name: "allowlist",           Action: "allow", SinkholeIPv4: "",               SinkholeIPv6: ""},
+		}
+	}
 
+	// ===== DNS =====
 	cfg.DNS.ListenUDP = getEnv("DNS_LISTEN_UDP", defaultStr(cfg.DNS.ListenUDP, ":53"))
 	cfg.DNS.ListenTCP = getEnv("DNS_LISTEN_TCP", defaultStr(cfg.DNS.ListenTCP, ":53"))
 	cfg.DNS.MaxPacketSize = getEnvInt("DNS_MAX_PACKET", defaultInt(cfg.DNS.MaxPacketSize, 1232))
 	cfg.DNS.SinkholeIPv4 = getEnv("DNS_SINKHOLE_IPV4", defaultStr(cfg.DNS.SinkholeIPv4, "0.0.0.0"))
 	cfg.DNS.SinkholeIPv6 = getEnv("DNS_SINKHOLE_IPV6", defaultStr(cfg.DNS.SinkholeIPv6, "::"))
 
-	// 🔥 Upstream override через ENV
 	if env := os.Getenv("DNS_UPSTREAMS"); env != "" {
 		cfg.DNS.Upstream = strings.Split(env, ",")
 	}
-
-	// 🔥 Fallback если ничего не задано
 	if len(cfg.DNS.Upstream) == 0 {
-		cfg.DNS.Upstream = []string{
-			"8.8.8.8:53",
-			"1.1.1.1:53",
-		}
+		cfg.DNS.Upstream = []string{"8.8.8.8:53", "1.1.1.1:53"}
 	}
 
 	// ===== HTTP =====
