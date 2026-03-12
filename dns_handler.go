@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -71,6 +72,21 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 
+	// FIX: пропускаем запросы к корневой зоне "." (NS ., SOA . и т.п.)
+	// TrimSuffix(".", ".") == "" — пустой домен нельзя обогащать через CloudAPI,
+	// он вызывает "api status: error" и засоряет метрики/логи.
+	if domain == "" {
+		resp, err := s.forwardToUpstream(r)
+		if err != nil {
+			m := new(dns.Msg)
+			m.SetRcode(r, dns.RcodeServerFailure)
+			_ = w.WriteMsg(m)
+			return
+		}
+		_ = w.WriteMsg(resp)
+		return
+	}
+
 	result, _ := s.engine.CheckDomain(domain)
 
 	latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
@@ -118,8 +134,24 @@ func (s *DNSServer) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 	_ = w.WriteMsg(resp)
 }
 
+// forwardToUpstream пробует все upstream серверы с общим контекстным таймаутом.
+// FIX: добавлен context.WithTimeout чтобы суммарное время ожидания по всем
+// upstream не превышало (2s * кол-во upstream). Это предотвращает накопление
+// задержки когда несколько upstream недоступны одновременно.
 func (s *DNSServer) forwardToUpstream(r *dns.Msg) (*dns.Msg, error) {
+	// Общий таймаут = 2s на upstream × количество upstream (обычно 2 → 4s max)
+	totalTimeout := time.Duration(len(s.cfg.DNS.Upstream)) * 2 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), totalTimeout)
+	defer cancel()
+
 	for _, upstream := range s.cfg.DNS.Upstream {
+		// Проверяем не истёк ли общий таймаут перед следующей попыткой
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("all upstreams failed: context deadline")
+		default:
+		}
+
 		resp, _, err := s.client.Exchange(r, upstream)
 		if err == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
 			return resp, nil
