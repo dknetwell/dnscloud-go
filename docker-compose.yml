@@ -4,6 +4,9 @@ services:
     image: valkey/valkey:7.2.5-alpine
     container_name: valkey
     restart: unless-stopped
+    command: valkey-server --save 60 100 --appendonly yes
+    volumes:
+      - valkey-data:/data
     networks:
       dnsnet:
         ipv4_address: 172.28.0.10
@@ -66,3 +69,6 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
+
+volumes:
+  valkey-data:
