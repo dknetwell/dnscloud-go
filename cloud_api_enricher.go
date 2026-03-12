@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -74,14 +75,20 @@ func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *Do
 		return fmt.Errorf("rate limit exceeded")
 	}
 
-	// Формируем XML cmd запрос для PAN-OS CloudAPI
-	// GET /api/?type=op&cmd=<test><dns-proxy><dns-signature><fqdn>DOMAIN</fqdn></dns-signature></dns-proxy></test>
-	cmd := fmt.Sprintf(
-		"<test><dns-proxy><dns-signature><fqdn>%s</fqdn></dns-signature></dns-proxy></test>",
-		url.QueryEscape(domain),
-	)
+	// FIX #4: строим XML cmd корректно.
+	// xml.EscapeText защищает от доменов со спецсимволами (<, >, &, ', ")
+	// — маловероятно для FQDN, но правильно с точки зрения XML.
+	// url.Values.Encode() кодирует весь cmd как параметр URL,
+	// а не только домен внутри XML (старое поведение было неверным).
+	cmd, err := buildPANOSCmd(domain)
+	if err != nil {
+		return fmt.Errorf("build cmd: %w", err)
+	}
 
-	reqURL := fmt.Sprintf("%s?type=op&cmd=%s", c.cfg.CloudAPI.Endpoint, cmd)
+	params := url.Values{}
+	params.Set("type", "op")
+	params.Set("cmd", cmd)
+	reqURL := fmt.Sprintf("%s?%s", c.cfg.CloudAPI.Endpoint, params.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 	if err != nil {
@@ -149,4 +156,18 @@ func (c *CloudAPIEnricher) Enrich(ctx context.Context, domain string, result *Do
 	}
 
 	return nil
+}
+
+// buildPANOSCmd формирует XML-команду для PAN-OS API.
+// Использует xml.EscapeText для корректного экранирования спецсимволов в домене.
+// Для обычных FQDN эскейпинг ничего не меняет, но защищает от edge-case входных данных.
+func buildPANOSCmd(domain string) (string, error) {
+	var buf bytes.Buffer
+	if err := xml.EscapeText(&buf, []byte(domain)); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"<test><dns-proxy><dns-signature><fqdn>%s</fqdn></dns-signature></dns-proxy></test>",
+		buf.String(),
+	), nil
 }
