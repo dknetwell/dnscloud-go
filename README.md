@@ -10,9 +10,9 @@ CoreDNS  ←── DoT (853) / DoH (443) / plain DNS (53)
   │            offload TLS, normalize all query types
   ▼
 dns-proxy (Go)   ←── L1 cache (Ristretto in-memory)
-  │                   L2 cache (Valkey/Redis)
+  │                   L2 cache (Valkey/Redis, персистентный)
   │                   Enrichment workers pool
-  │                   → CloudAPI enricher
+  │                   → CloudAPI enricher (PAN-OS XML/JSON API)
   │                   → (your enricher N)
   ▼
 Upstream DNS (8.8.8.8 / 1.1.1.1)
@@ -23,14 +23,15 @@ Upstream DNS (8.8.8.8 / 1.1.1.1)
 ## Быстрый старт
 
 ```bash
-git clone https://github.com/your-org/dns-security-proxy.git
-cd dns-security-proxy
+git clone -b clau https://github.com/dknetwell/dnscloud-go.git
+cd dnscloud-go
 
-# Обязательно: задай API-ключ
+# Обязательно: скопируй и заполни .env
 cp .env.example .env
-vim .env   # CLOUDAPI_APIKEY=...
+vim .env   # CLOUDAPI_ENDPOINT=... CLOUDAPI_APIKEY=...
 
-bash setup.sh
+chmod +x setup.sh check.sh dns-monitor.sh
+./setup.sh
 ```
 
 После старта:
@@ -40,15 +41,148 @@ bash setup.sh
 | `:53 udp/tcp` | Plain DNS |
 | `:853 tcp` | DNS-over-TLS (DoT) |
 | `:443 tcp` | DNS-over-HTTPS (DoH) — `/dns-query` |
-| `http://localhost:8080/health` | Healthcheck |
-| `http://localhost:8080/stats` | JSON-статистика движка |
-| `http://localhost:8080/metrics` | Prometheus метрики |
+| `http://localhost:8080/health` | Healthcheck (только localhost) |
+| `http://localhost:8080/stats` | JSON-статистика движка (только localhost) |
+| `http://localhost:8080/metrics` | Prometheus метрики (только localhost) |
+
+> **Важно:** порт `8080` публикуется только на `127.0.0.1` — наружу не торчит. Это намеренно.
+
+---
+
+## Проверка после запуска
+
+```bash
+./check.sh
+```
+
+Скрипт проверяет все протоколы (UDP/TCP/DoT/DoH), кэш L1/L2, Stats API, Prometheus метрики, логи контейнеров. Все проверки должны быть ✔.
+
+```bash
+# Ручная проверка DNS
+dig @127.0.0.1 google.com A
+dig @127.0.0.1 fraud.ru A     # должен вернуть 0.0.0.0 (blocked, category=1)
+```
+
+---
+
+## Мониторинг в реальном времени
+
+```bash
+./dns-monitor.sh                    # localhost, обновление каждые 5с
+./dns-monitor.sh 127.0.0.1 3        # обновление каждые 3с
+./dns-monitor.sh 192.168.1.10 5     # удалённый хост
+```
+
+Показывает: RPS (запросов в секунду с дельтой), процент блокировок, cache hit rate по слоям, статус CloudAPI enricher (ok/error), размер очереди обогащения, топ запрашиваемых доменов, заблокированные домены с категорией, состояние контейнеров.
+
+---
+
+## Публикация сервиса
+
+### Порты наружу
+
+| Порт | Протокол | Публиковать | Причина |
+|---|---|---|---|
+| 53 | UDP + TCP | ✅ да | Plain DNS |
+| 853 | TCP | ✅ да | DNS-over-TLS |
+| 443 | TCP | ✅ да | DNS-over-HTTPS |
+| **8080** | TCP | ❌ **нет** | stats/metrics — только localhost |
+
+### Настройка firewalld (Rocky Linux / RHEL)
+
+Rate limiting — защита от amplification-атак и злоупотребления как open resolver:
+
+```bash
+# DNS UDP :53
+firewall-cmd --permanent --add-rich-rule='
+  rule family="ipv4"
+  port port="53" protocol="udp"
+  limit value="20/s"
+  accept'
+
+# DNS TCP :53
+firewall-cmd --permanent --add-rich-rule='
+  rule family="ipv4"
+  port port="53" protocol="tcp"
+  limit value="20/s"
+  accept'
+
+# DoT :853
+firewall-cmd --permanent --add-rich-rule='
+  rule family="ipv4"
+  port port="853" protocol="tcp"
+  limit value="10/s"
+  accept'
+
+# DoH :443
+firewall-cmd --permanent --add-rich-rule='
+  rule family="ipv4"
+  port port="443" protocol="tcp"
+  limit value="10/s"
+  accept'
+
+# Применить
+firewall-cmd --reload
+```
+
+Проверить применённые правила:
+
+```bash
+firewall-cmd --list-rich-rules
+# Ожидаемый вывод:
+# rule family="ipv4" port port="443" protocol="tcp" accept limit value="10/s"
+# rule family="ipv4" port port="53"  protocol="tcp" accept limit value="20/s"
+# rule family="ipv4" port port="53"  protocol="udp" accept limit value="20/s"
+# rule family="ipv4" port port="853" protocol="tcp" accept limit value="10/s"
+
+firewall-cmd --list-services
+# Должно быть пусто — сервисы dns/https без rate limit нам не нужны.
+# Если есть — убрать:
+firewall-cmd --permanent --remove-service=dns
+firewall-cmd --permanent --remove-service=https
+firewall-cmd --reload
+```
+
+Проверить что `8080` не торчит наружу:
+
+```bash
+netstat -tunelp | grep 8080
+# Должно быть: 127.0.0.1:8080 — НЕ 0.0.0.0:8080
+```
+
+### Ограничение рекурсии по IP (опционально, рекомендуется)
+
+Если сервис предназначен только для определённых подсетей — добавить ACL в `Corefile`:
+
+```
+.:53 {
+    acl {
+        allow net 10.0.0.0/8
+        allow net 192.168.0.0/16
+        block
+    }
+    forward . 172.28.0.20:53 {
+        prefer_udp
+    }
+    errors
+    log
+}
+```
+
+### Проверка снаружи (после публикации)
+
+```bash
+# С внешней машины:
+dig @<PUBLIC_IP> google.com A          # должен работать
+dig @<PUBLIC_IP> -p 853 google.com +tls   # DoT должен работать
+curl http://<PUBLIC_IP>:8080/health    # должен зависнуть — порт закрыт
+```
 
 ---
 
 ## Конфигурация
 
-Приоритет загрузки: **переменные окружения → config.yaml → встроенные дефолты**.
+Приоритет загрузки: **переменные окружения (.env) → config/config.yaml → встроенные дефолты**.
 
 ### Переменные окружения (`.env`)
 
@@ -61,20 +195,17 @@ bash setup.sh
 | `DNS_UPSTREAMS` | `8.8.8.8:53,1.1.1.1:53` | Upstream серверы через запятую |
 | `DNS_SINKHOLE_IPV4` | `0.0.0.0` | IP для заблокированных A-запросов |
 | `DNS_SINKHOLE_IPV6` | `::` | IP для заблокированных AAAA-запросов |
-| `DNS_MAX_PACKET` | `1232` | Максимальный размер UDP-пакета (байт) |
 
 #### CloudAPI / Enricher
 
 | Переменная | Дефолт | Описание |
 |---|---|---|
-| `CLOUDAPI_ENDPOINT` | — | URL API (`https://api.example.com/check`) |
-| `CLOUDAPI_APIKEY` | — | Bearer-токен авторизации |
-| `CLOUDAPI_TIMEOUT` | `2` | Таймаут HTTP-запроса (секунды) — **SLA ответа клиенту** |
+| `CLOUDAPI_ENDPOINT` | — | URL API (`https://host/api/`) |
+| `CLOUDAPI_APIKEY` | — | Ключ авторизации (X-PAN-KEY) |
+| `CLOUDAPI_TIMEOUT` | `5` | Таймаут HTTP-запроса (секунды) |
 | `CLOUDAPI_RPS` | `50` | Rate limit — запросов в секунду к API |
-| `CLOUDAPI_BURST` | `100` | Burst лимит (накопленный кредит токенов) |
+| `CLOUDAPI_BURST` | `100` | Burst лимит |
 | `CLOUDAPI_INSECURE` | `false` | Отключить TLS-верификацию (dev only) |
-
-> **SLA:** `CLOUDAPI_TIMEOUT` контролирует максимальное время ожидания ответа от enricher. Обогащение происходит асинхронно в worker-pool — клиент DNS получает ответ немедленно (allow по умолчанию), пока результат кэшируется для следующего запроса. Это архитектурный выбор в пользу latency: первый запрос к домену всегда быстрый.
 
 #### Engine / Worker Pool
 
@@ -83,208 +214,34 @@ bash setup.sh
 | `ENGINE_WORKERS` | `100` | Количество горутин-воркеров обогащения |
 | `ENGINE_QUEUE` | `1000` | Размер очереди задач обогащения |
 
-> При переполнении очереди домен получает `negative=true`, TTL=10s и пропускается без обогащения. В логах появится `warn` с полем `"msg":"enrichment queue full"`.
-
-#### TTL
-
-| Переменная | Дефолт | Описание |
-|---|---|---|
-| `TTL_DEFAULT` | `300` | TTL по умолчанию для новых записей (секунды) |
-| `TTL_MIN` | `60` | Минимальный TTL (clamp снизу) |
-| `TTL_MAX` | `86400` | Максимальный TTL (clamp сверху) |
-
-#### Кэш
-
-| Переменная | Дефолт | Описание |
-|---|---|---|
-| `CACHE_MAX_COST` | `1073741824` (1 GB) | Максимальный размер L1-кэша в байтах |
-
-#### Valkey (L2 кэш)
-
-| Переменная | Дефолт | Описание |
-|---|---|---|
-| `VALKEY_ADDR` | `valkey:6379` | Адрес Valkey/Redis |
-| `VALKEY_PASSWORD` | — | Пароль |
-| `VALKEY_DB` | `0` | Номер базы данных |
-
 #### Прочее
 
 | Переменная | Дефолт | Описание |
 |---|---|---|
-| `HTTP_LISTEN` | `:8080` | Адрес HTTP-сервера (stats/metrics/health) |
-| `LOG_LEVEL` | `info` | Уровень логирования: `debug`, `info`, `warn`, `error` |
-| `CONFIG_PATH` | — | Путь к YAML-конфигу (если не задан — YAML не читается) |
+| `VALKEY_ADDR` | `valkey:6379` | Адрес Valkey/Redis |
+| `HTTP_LISTEN` | `:8080` | Адрес HTTP-сервера |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
-### config.yaml (опционально)
-
-```yaml
-logging:
-  level: info
-
-dns:
-  listen_udp: ":53"
-  listen_tcp: ":53"
-  upstream:
-    - "8.8.8.8:53"
-    - "1.1.1.1:53"
-  sinkhole_ipv4: "0.0.0.0"
-  sinkhole_ipv6: "::"
-  max_packet_size: 1232
-
-cloud_api:
-  endpoint: "https://api.example.com/check"
-  api_key: "CHANGE_ME"
-  insecure_skip_verify: false
-  rate_limit: 50      # RPS к CloudAPI
-  burst: 100          # burst бюджет токенов
-  timeout_seconds: 2  # SLA таймаут
-
-ttl:
-  default: 300
-  min: 60
-  max: 86400
-
-cache:
-  max_cost: 1073741824
-
-valkey:
-  address: "valkey:6379"
-  password: ""
-  db: 0
-
-engine:
-  worker_count: 100
-  worker_queue_size: 1000
-
-http:
-  listen: ":8080"
-```
+> **SLA:** DNS-ответ клиент получает немедленно — обогащение асинхронно. Первый запрос к домену всегда быстрый (`allow` по умолчанию), второй — уже с результатом CloudAPI.
 
 ---
 
 ## Логирование
 
-Все логи пишутся в **stdout** в формате **JSON**, по одной записи на строку (logfmt-совместимо с Promtail).
+Все логи в **stdout** в формате **JSON** (logfmt-совместимо с Promtail).
 
-### Структура лог-записи
+```bash
+# Живые логи
+docker compose logs -f dns-proxy | jq .
 
-```json
-{
-  "ts":         "2026-02-24T10:01:02.345678Z",
-  "level":      "info",
-  "component":  "dns",
-  "msg":        "dns_request",
+# Только заблокированные домены
+docker compose logs -f dns-proxy | jq 'select(.blocked == true)'
 
-  "domain":     "evil-malware.com",
-  "client_ip":  "192.168.1.42",
-  "qtype":      "A",
-  "latency_ms": 0.38,
-  "blocked":    true,
-  "category":   14,
-  "action":     "block",
-  "source":     "cloud_api",
-  "ttl":        60
-}
-```
+# Только ошибки enricher
+docker compose logs -f dns-proxy | jq 'select(.msg == "enrich_error")'
 
-### Поля
-
-| Поле | Тип | Описание |
-|---|---|---|
-| `ts` | string (RFC3339Nano) | Timestamp в UTC |
-| `level` | string | `debug` / `info` / `warn` / `error` / `fatal` |
-| `component` | string | `dns`, `engine`, `cloud_api`, `http`, `system` |
-| `msg` | string | Тип события |
-| `domain` | string | Запрошенный домен |
-| `client_ip` | string | IP-адрес клиента DNS |
-| `qtype` | string | Тип DNS-запроса (`A`, `AAAA`, `MX`, …) |
-| `latency_ms` | float | Время обработки запроса в мс |
-| `blocked` | bool | Заблокирован ли домен |
-| `category` | int | Категория угрозы (из enricher, 0 = чисто) |
-| `action` | string | `allow` / `block` |
-| `source` | string | Источник решения (`cloud_api`, `engine`, …) |
-| `ttl` | int | TTL записи в секундах |
-| `error` | string | Текст ошибки (только при `level=error/warn`) |
-| `fields` | object | Произвольные доп. поля (используется в `LogInfoFields`) |
-
-### Типы событий (`msg`)
-
-| msg | level | Описание |
-|---|---|---|
-| `dns_request` | info | Каждый DNS-запрос с полным контекстом |
-| `enrich` | debug | Вызов каждого enricher (включается при `LOG_LEVEL=debug`) |
-| `enrichment queue full` | warn | Очередь воркеров переполнена |
-| `upstream failed` | error | Все upstream DNS недоступны |
-| `DNS server started` | info | Сервер поднялся |
-| `HTTP server started` | info | HTTP сервер поднялся |
-| `shutdown signal received` | info | Получен SIGTERM/SIGINT |
-
----
-
-## Сбор логов: Promtail + Loki + Grafana
-
-### 1. Promtail — сбор из Docker
-
-```yaml
-# promtail-config.yaml
-scrape_configs:
-  - job_name: dns-proxy
-    docker_sd_configs:
-      - host: unix:///var/run/docker.sock
-        refresh_interval: 5s
-    relabel_configs:
-      - source_labels: [__meta_docker_container_name]
-        regex: dns-proxy
-        action: keep
-      - source_labels: [__meta_docker_container_name]
-        target_label: container
-    pipeline_stages:
-      - json:
-          expressions:
-            level:      level
-            component:  component
-            msg:        msg
-            domain:     domain
-            client_ip:  client_ip
-            blocked:    blocked
-            category:   category
-            latency_ms: latency_ms
-            source:     source
-      - labels:
-          level:
-          component:
-          msg:
-          blocked:
-          source:
-      - timestamp:
-          source: ts
-          format: RFC3339Nano
-```
-
-### 2. Полезные запросы в Loki (LogQL)
-
-```logql
-# Все заблокированные запросы
-{container="dns-proxy"} | json | blocked = "true"
-
-# Топ заблокированных доменов за час
-{container="dns-proxy"} | json | blocked = "true"
-  | line_format "{{.domain}}"
-  | count_over_time[1h]
-
-# Медленные запросы (>10ms)
-{container="dns-proxy"} | json
-  | latency_ms > 10
-
-# Запросы по конкретному клиенту
-{container="dns-proxy"} | json | client_ip = "192.168.1.42"
-
-# Ошибки enricher
-{container="dns-proxy"} | json | level = "warn" | component = "cloud_api"
-
-# Топ категорий угроз
-{container="dns-proxy"} | json | blocked = "true"
-  | line_format "{{.category}}"
+# Медленные запросы к CloudAPI (>1000ms)
+docker compose logs -f dns-proxy | jq 'select(.msg == "enrich_ok" and .latency_ms > 1000)'
 ```
 
 ---
@@ -293,29 +250,15 @@ scrape_configs:
 
 Эндпоинт: `http://localhost:8080/metrics`
 
-### Счётчики
-
 | Метрика | Labels | Описание |
 |---|---|---|
 | `dns_requests_total` | — | Всего DNS-запросов |
-| `dns_requests_blocked_total` | — | Заблокировано (sinkhole) |
-| `dns_cache_hits_total` | `layer={l1,l2}` | Попадания в кэш по уровням |
-| `dns_enricher_calls_total` | `enricher`, `status={ok,error}` | Вызовы enricher-ов |
-
-### Гистограммы
-
-| Метрика | Labels | Описание |
-|---|---|---|
-| `dns_request_duration_ms` | `blocked={true,false}` | Latency обработки запроса в мс |
-| `dns_enricher_duration_ms` | `enricher` | Latency каждого enricher в мс |
-
-### Gauge
-
-| Метрика | Описание |
-|---|---|
-| `dns_enricher_queue_size` | Текущий размер очереди обогащения |
-
-### Пример Grafana dashboard (PromQL)
+| `dns_requests_blocked_total` | — | Заблокировано |
+| `dns_cache_hits_total` | `layer={l1,l2}` | Попадания в кэш |
+| `dns_enricher_calls_total` | `enricher`, `status={ok,error}` | Вызовы enricher |
+| `dns_request_duration_ms` | `blocked={true,false}` | Latency запроса |
+| `dns_enricher_duration_ms` | `enricher` | Latency enricher |
+| `dns_enricher_queue_size` | — | Размер очереди обогащения |
 
 ```promql
 # RPS
@@ -324,7 +267,7 @@ rate(dns_requests_total[1m])
 # Процент блокировок
 rate(dns_requests_blocked_total[1m]) / rate(dns_requests_total[1m]) * 100
 
-# Cache hit rate (L1)
+# Cache hit rate L1
 rate(dns_cache_hits_total{layer="l1"}[1m]) / rate(dns_requests_total[1m]) * 100
 
 # p95 latency
@@ -332,27 +275,13 @@ histogram_quantile(0.95, rate(dns_request_duration_ms_bucket[5m]))
 
 # Ошибки CloudAPI
 rate(dns_enricher_calls_total{enricher="cloud_api",status="error"}[5m])
-
-# Заполненность очереди
-dns_enricher_queue_size
-```
-
-### Prometheus scrape config
-
-```yaml
-scrape_configs:
-  - job_name: dns-proxy
-    static_configs:
-      - targets: ["localhost:8080"]
-    metrics_path: /metrics
-    scrape_interval: 15s
 ```
 
 ---
 
 ## Добавление нового источника (Enricher)
 
-Архитектура намеренно открыта для расширения. Достаточно реализовать интерфейс:
+Реализовать интерфейс:
 
 ```go
 type Enricher interface {
@@ -361,125 +290,16 @@ type Enricher interface {
 }
 ```
 
-### Шаг 1 — создать файл `my_enricher.go`
+Зарегистрировать в `main.go`:
 
 ```go
-package main
-
-import (
-    "context"
-    "fmt"
-)
-
-type MyEnricher struct {
-    cfg *Config
-    // добавь свои поля: http.Client, rate.Limiter, etc.
-}
-
-func NewMyEnricher(cfg *Config) *MyEnricher {
-    return &MyEnricher{cfg: cfg}
-}
-
-// Name — используется как label в метриках Prometheus
-// и как component в логах. Должен быть уникальным.
-func (e *MyEnricher) Name() string {
-    return "my_enricher"
-}
-
-func (e *MyEnricher) Enrich(ctx context.Context, domain string, result *DomainResult) error {
-    // ctx уже содержит timeout из CLOUDAPI_TIMEOUT
-    // result можно изменять: result.Blocked, result.Category, result.Action, result.TTL
-
-    score, err := callMyAPI(ctx, domain)
-    if err != nil {
-        return fmt.Errorf("my_enricher: %w", err)
-    }
-
-    if score > 80 {
-        result.Blocked = true
-        result.Category = 99   // твоя категория
-        result.Action = "block"
-        result.Source = e.Name()
-    }
-
-    return nil
-}
-```
-
-### Шаг 2 — зарегистрировать в `main.go`
-
-```go
-cloudEnricher := NewCloudAPIEnricher(cfg)
-myEnricher    := NewMyEnricher(cfg)
-
 enrichers := []Enricher{
-    cloudEnricher,  // выполняются по порядку
-    myEnricher,
+    NewCloudAPIEnricher(cfg),
+    NewMyEnricher(cfg),    // добавить сюда
 }
-
-engine := NewCheckEngine(cfg, cache, valkeyClient, enrichers)
 ```
 
-**Готово.** Метрики `dns_enricher_calls_total{enricher="my_enricher"}` и `dns_enricher_duration_ms{enricher="my_enricher"}` подхватятся автоматически. Логи при `LOG_LEVEL=debug` тоже появятся без дополнительных правок.
-
-### Шаг 3 (опционально) — добавить конфиг
-
-Расширь `Config` в `config.go`:
-
-```go
-MyEnricher struct {
-    Endpoint string `yaml:"endpoint"`
-    APIKey   string `yaml:"api_key"`
-} `yaml:"my_enricher"`
-```
-
-Добавь загрузку в `LoadConfig()`:
-
-```go
-cfg.MyEnricher.Endpoint = getEnv("MY_ENRICHER_ENDPOINT", cfg.MyEnricher.Endpoint)
-cfg.MyEnricher.APIKey   = getEnv("MY_ENRICHER_APIKEY",   cfg.MyEnricher.APIKey)
-```
-
----
-
-## Rate Limiting и SLA
-
-### Rate limit к CloudAPI
-
-Реализован через [golang.org/x/time/rate](https://pkg.go.dev/golang.org/x/time/rate) (token bucket):
-
-```
-CLOUDAPI_RPS=50    → 50 запросов в секунду (скорость пополнения токенов)
-CLOUDAPI_BURST=100 → до 100 запросов мгновенно при накопленном бюджете
-```
-
-При превышении лимита `Enrich()` возвращает ошибку `"rate limit exceeded"` — домен обрабатывается без обогащения (allow by default), метрика `dns_enricher_calls_total{status="error"}` инкрементируется.
-
-### SLA ответа клиенту
-
-DNS-ответ клиент получает **немедленно** — обогащение происходит асинхронно:
-
-```
-Client запрос
-     │
-     ▼
-CheckDomain() → L1 hit?  ──yes──→ ответ ~0.01ms
-     │
-     no
-     ▼
-             → L2 hit?  ──yes──→ ответ ~1-2ms
-     │
-     no
-     ▼
-     Создать DomainResult{action:"allow"}
-     Отправить в jobs channel (async)  ──→ воркер → CloudAPI → cache
-     │
-     ▼
-     Ответ клиенту СРАЗУ ~0.1ms
-     (следующий запрос к тому же домену вернёт обогащённый результат)
-```
-
-Таймаут `CLOUDAPI_TIMEOUT` ограничивает время ожидания воркера внутри enricher, **не влияя на latency ответа клиенту**.
+Метрики `dns_enricher_calls_total{enricher="my_enricher"}` подхватятся автоматически.
 
 ---
 
@@ -487,24 +307,26 @@ CheckDomain() → L1 hit?  ──yes──→ ответ ~0.01ms
 
 ```
 .
-├── main.go                  # Точка входа, сборка зависимостей
-├── config.go                # Config struct + LoadConfig (YAML + ENV)
+├── main.go                  # Точка входа
+├── config.go                # Config struct + LoadConfig
 ├── env.go                   # Helpers: getEnv, getEnvInt, ...
 ├── models.go                # DomainResult, Stats
-├── logger.go                # JSON-логгер (LogEntry, LogDNSRequest, ...)
+├── logger.go                # JSON-логгер
 ├── metrics.go               # Prometheus метрики
-├── dns_handler.go           # DNS сервер, handleDNS, sinkhole
+├── dns_handler.go           # DNS сервер, sinkhole, upstream
 ├── engine.go                # CheckEngine, worker pool, singleflight
 ├── cache.go                 # L1 кэш (Ristretto)
-├── valkey.go                # L2 кэш (Valkey/Redis)
+├── valkey.go                # L2 кэш (Valkey/Redis, персистентный)
 ├── enricher.go              # Интерфейс Enricher
-├── cloud_api_enricher.go    # Реализация CloudAPI enricher
+├── cloud_api_enricher.go    # Реализация CloudAPI (PAN-OS)
 ├── http_server.go           # /health /stats /metrics
 ├── Dockerfile               # Multi-stage build
 ├── docker-compose.yml       # dns-proxy + valkey + coredns
 ├── Corefile                 # CoreDNS: plain + DoT + DoH → dns-proxy
 ├── setup.sh                 # Генерация сертов + docker compose up
-└── config/config.yaml       # (создаётся setup.sh, опционально)
+├── check.sh                 # Проверочный скрипт (все протоколы + кэш + метрики)
+├── dns-monitor.sh           # Живой мониторинг в терминале
+└── config/config.yaml       # Основной конфиг (категории, TTL, воркеры)
 ```
 
 ---
@@ -513,23 +335,25 @@ CheckDomain() → L1 hit?  ──yes──→ ответ ~0.01ms
 
 ```bash
 # Локальный запуск без Docker
-go run . 
+go run .
 
 # Тест DNS
-dig @127.0.0.1 google.com
+dig @127.0.0.1 google.com A
+dig @127.0.0.1 fraud.ru A        # заблокированный домен
 
-# Тест DoT
-dig @127.0.0.1 -p 853 google.com +tls
+# DoT
+dig @127.0.0.1 -p 853 google.com A +tls
 
-# Посмотреть логи
+# Логи
 docker compose logs -f dns-proxy | jq .
-
-# Фильтрация только заблокированных
-docker compose logs -f dns-proxy | jq 'select(.blocked == true)'
 
 # Ручной просмотр L2 кэша
 docker exec -it valkey valkey-cli keys "*"
 docker exec -it valkey valkey-cli get "google.com"
+
+# Проверить персистентность Valkey
+docker exec valkey ls /data
+# appendonlydir  dump.rdb  ← оба файла должны быть
 ```
 
 ---
@@ -538,4 +362,5 @@ docker exec -it valkey valkey-cli get "google.com"
 
 - Docker + Docker Compose plugin
 - Rocky Linux 10 / любой Linux с Docker
-- Порты `53`, `853`, `443`, `8080` свободны
+- Порты `53`, `853`, `443` свободны
+- `8080` открыт только локально (`127.0.0.1`)
