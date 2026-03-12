@@ -56,6 +56,11 @@ func (e *CheckEngine) worker() {
 		ctx, cancel := context.WithTimeout(context.Background(),
 			time.Duration(e.cfg.CloudAPI.TimeoutSeconds)*time.Second)
 
+		// FIX #1 + #3: отслеживаем наличие ошибок обогащения.
+		// Воркер работает с job.result напрямую — DNS-хендлер уже получил
+		// свою копию (snapshot) через CheckDomain, поэтому гонки нет.
+		enrichHasError := false
+
 		for _, enricher := range e.enrichers {
 			enrichStart := time.Now()
 			err := enricher.Enrich(ctx, job.domain, job.result)
@@ -64,6 +69,7 @@ func (e *CheckEngine) worker() {
 			status := "ok"
 			if err != nil {
 				status = "error"
+				enrichHasError = true
 			}
 			enricherCallsTotal.WithLabelValues(enricher.Name(), status).Inc()
 			enricherDuration.WithLabelValues(enricher.Name()).Observe(latencyMs)
@@ -82,8 +88,18 @@ func (e *CheckEngine) worker() {
 
 		cancel()
 
-		e.cache.Set(job.domain, job.result)
-		e.valkey.SetAsync(job.domain, job.result)
+		// FIX #1: при ошибке обогащения пишем только в L1 с коротким TTL,
+		// чтобы домен повторно обогатился через несколько секунд,
+		// а не сидел как "allow/engine" на 300 секунд в обоих кэшах.
+		if enrichHasError {
+			job.result.TTL = 30 // короткий TTL — повторный запрос пройдёт через enricher
+			e.cache.Set(job.domain, job.result)
+			// НЕ пишем в Valkey: при ошибке не хотим надолго фиксировать
+			// необогащённый результат в персистентном кэше
+		} else {
+			e.cache.Set(job.domain, job.result)
+			e.valkey.SetAsync(job.domain, job.result)
+		}
 
 		atomic.AddInt64(&e.stats.APICalls, 1)
 		enricherQueueSize.Set(float64(len(e.jobs)))
@@ -129,16 +145,26 @@ func (e *CheckEngine) CheckDomain(domain string) (*DomainResult, error) {
 			LogWarn("engine", "enrichment queue full, skipping domain: "+domain)
 		}
 
-		return result, nil
+		// FIX #3: возвращаем копию структуры, а не оригинальный pointer.
+		// DNS-хендлер будет читать snapshot, воркер — модифицировать оригинал.
+		// Без этого был data race: хендлер читает result.Blocked пока воркер
+		// пишет в него же через enricher.Enrich().
+		snapshot := *result
+		return &snapshot, nil
 	})
 
 	res := v.(*DomainResult)
 
-	if res.TTL < e.cfg.TTL.Min {
-		res.TTL = e.cfg.TTL.Min
-	}
-	if res.TTL > e.cfg.TTL.Max {
-		res.TTL = e.cfg.TTL.Max
+	// FIX #2: clamp TTL применяем только к "нормальным" результатам.
+	// Negative=true означает что очередь была переполнена и мы намеренно
+	// выставили TTL=10 — не нужно его поднимать до Min=60.
+	if !res.Negative {
+		if res.TTL < e.cfg.TTL.Min {
+			res.TTL = e.cfg.TTL.Min
+		}
+		if res.TTL > e.cfg.TTL.Max {
+			res.TTL = e.cfg.TTL.Max
+		}
 	}
 
 	res.Timestamp = time.Now()
